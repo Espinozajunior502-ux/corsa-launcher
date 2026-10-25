@@ -7,6 +7,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.SystemClock;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 
@@ -15,9 +16,9 @@ import androidx.lifecycle.MutableLiveData;
 import java.util.List;
 
 /**
- * Lee qué se está reproduciendo en cualquier app (Spotify, YouTube Music, etc.)
- * usando MediaSession, sin tocar esas apps.
- * Requiere que el usuario conceda "Acceso a notificaciones" una sola vez.
+ * Lee qué se está reproduciendo en cualquier app con MediaSession
+ * (Spotify, YouTube Music, la app de música del radio, etc.).
+ * Requiere "Acceso a notificaciones" para Corsa Launcher.
  */
 public class MediaListenerService extends NotificationListenerService {
 
@@ -27,8 +28,26 @@ public class MediaListenerService extends NotificationListenerService {
     public static class NowPlayingInfo {
         public String title = "";
         public String artist = "";
+        public String album = "";
+        public String source = "";
         public boolean isPlaying = false;
         public Bitmap albumArt;
+        public long duration = 0;       // ms, 0 = desconocida
+        public long position = 0;       // ms en el momento de updateTime
+        public long updateTime = 0;     // SystemClock.elapsedRealtime()
+        public float speed = 1f;
+
+        /** Posición actual estimada. */
+        public long currentPosition() {
+            long p = position;
+            if (isPlaying) p += (long) ((SystemClock.elapsedRealtime() - updateTime) * speed);
+            if (duration > 0 && p > duration) p = duration;
+            return Math.max(0, p);
+        }
+    }
+
+    public static boolean hasController() {
+        return activeController != null;
     }
 
     private MediaSessionManager sessionManager;
@@ -138,6 +157,15 @@ public class MediaListenerService extends NotificationListenerService {
         return "";
     }
 
+    private String appLabel(String pkg) {
+        try {
+            return String.valueOf(getPackageManager().getApplicationLabel(
+                    getPackageManager().getApplicationInfo(pkg, 0)));
+        } catch (Exception e) {
+            return pkg;
+        }
+    }
+
     private void publish(MediaController controller) {
         if (controller == null) {
             nowPlaying.postValue(null);
@@ -155,10 +183,21 @@ public class MediaListenerService extends NotificationListenerService {
         info.artist = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ARTIST,
                 MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
                 MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
+        info.album = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ALBUM);
+        info.source = appLabel(controller.getPackageName());
         info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
         if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ART);
         if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
-        info.isPlaying = state != null && state.getState() == PlaybackState.STATE_PLAYING;
+        info.duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
+        if (state != null) {
+            info.isPlaying = state.getState() == PlaybackState.STATE_PLAYING;
+            info.position = Math.max(0, state.getPosition());
+            info.updateTime = state.getLastPositionUpdateTime();
+            if (info.updateTime <= 0) info.updateTime = SystemClock.elapsedRealtime();
+            info.speed = state.getPlaybackSpeed();
+        } else {
+            info.updateTime = SystemClock.elapsedRealtime();
+        }
         nowPlaying.postValue(info);
     }
 
