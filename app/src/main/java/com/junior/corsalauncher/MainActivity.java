@@ -19,6 +19,7 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
@@ -92,7 +93,7 @@ public class MainActivity extends AppCompatActivity {
     };
 
     private static final int[] BT_PROFILES = {
-            BluetoothProfile.HEADSET, BluetoothProfile.A2DP, 11 /* A2DP_SINK */, 16 /* HEADSET_CLIENT */
+            BluetoothProfile.HEADSET, BluetoothProfile.A2DP, 11 /* A2DP_SINK */, 16 /* HEADSET_CLIENT */, 12 /* AVRCP_CONTROLLER */
     };
 
     private TextView clockText, dateText, greetingText, weatherText, btText, btBattery, speedValue;
@@ -118,6 +119,12 @@ public class MainActivity extends AppCompatActivity {
     private boolean notifAccess = false;
     private MediaListenerService.NowPlayingInfo currentInfo = null;
     private String lastBroadcast = "(ninguno)";
+    private static final String ACTION_AVRCP_TRACK = "android.bluetooth.avrcp-controller.profile.action.TRACK_EVENT";
+    private static final String EXTRA_AVRCP_META = "android.bluetooth.avrcp-controller.profile.extra.METADATA";
+    private static final String EXTRA_AVRCP_PLAY = "android.bluetooth.avrcp-controller.profile.extra.PLAYBACK";
+    /** Datos que llegan por Bluetooth (AVRCP) directo del iPhone. */
+    private MediaListenerService.NowPlayingInfo avrcpInfo = null;
+    private String avrcpDebug = "(sin datos)";
     private final List<String> sniffLog = new ArrayList<>();
     private final Map<String, Set<String>> twActions = new LinkedHashMap<>();
 
@@ -168,7 +175,10 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             lastBroadcast = String.valueOf(intent.getAction());
-            if (MediaListenerService.hasController() || MediaListenerService.hasNotifActions()) return; // la sesión real manda
+            if (ACTION_AVRCP_TRACK.equals(intent.getAction())) {
+                handleAvrcp(intent);
+                return;
+            }
             String title = firstExtra(intent, "track", "title", "song", "songname");
             if (title == null || title.isEmpty()) return;
             MediaListenerService.NowPlayingInfo info = new MediaListenerService.NowPlayingInfo();
@@ -180,9 +190,63 @@ public class MainActivity extends AppCompatActivity {
             info.source = "Bluetooth";
             info.isPlaying = intent.getBooleanExtra("playing", true);
             info.updateTime = SystemClock.elapsedRealtime();
-            MediaListenerService.nowPlaying.setValue(info);
+            setBroadcastInfo(info);
         }
     };
+
+    private void setBroadcastInfo(MediaListenerService.NowPlayingInfo info) {
+        avrcpInfo = info;
+        renderMusic();
+    }
+
+    /** El aviso TRACK_EVENT trae un MediaMetadata y/o un PlaybackState. */
+    private void handleAvrcp(Intent intent) {
+        MediaListenerService.NowPlayingInfo info = new MediaListenerService.NowPlayingInfo();
+        if (avrcpInfo != null) { // conserva lo anterior si este aviso trae solo una parte
+            info.title = avrcpInfo.title;
+            info.artist = avrcpInfo.artist;
+            info.album = avrcpInfo.album;
+            info.duration = avrcpInfo.duration;
+            info.isPlaying = avrcpInfo.isPlaying;
+            info.position = avrcpInfo.position;
+            info.updateTime = avrcpInfo.updateTime;
+            info.speed = avrcpInfo.speed;
+        }
+        info.source = "Bluetooth";
+        StringBuilder dbg = new StringBuilder();
+        try {
+            Object m = intent.getParcelableExtra(EXTRA_AVRCP_META);
+            if (m instanceof MediaMetadata) {
+                MediaMetadata md = (MediaMetadata) m;
+                String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
+                String ar = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
+                String al = md.getString(MediaMetadata.METADATA_KEY_ALBUM);
+                if (t != null) info.title = t;
+                if (ar != null) info.artist = ar;
+                if (al != null) info.album = al;
+                long d = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                if (d > 0) info.duration = d;
+                dbg.append("meta: ").append(t).append(" / ").append(ar).append("  ");
+            }
+            Object ps = intent.getParcelableExtra(EXTRA_AVRCP_PLAY);
+            if (ps instanceof PlaybackState) {
+                PlaybackState st = (PlaybackState) ps;
+                info.isPlaying = st.getState() == PlaybackState.STATE_PLAYING;
+                info.position = Math.max(0, st.getPosition());
+                info.updateTime = SystemClock.elapsedRealtime();
+                info.speed = st.getPlaybackSpeed();
+                dbg.append("estado=").append(st.getState());
+            }
+        } catch (Exception e) {
+            dbg.append("error: ").append(e);
+        }
+        if (dbg.length() == 0) {
+            Bundle ex = intent.getExtras();
+            dbg.append("extras: ").append(ex == null ? "ninguno" : ex.keySet().toString());
+        }
+        avrcpDebug = dbg.toString();
+        setBroadcastInfo(info);
+    }
 
     /** Escucha las acciones que declaran las apps com.tw.* del radio y apunta lo que llega. */
     private final BroadcastReceiver sniffReceiver = new BroadcastReceiver() {
@@ -222,7 +286,7 @@ public class MainActivity extends AppCompatActivity {
                 info.source = "Bluetooth";
                 info.isPlaying = true;
                 info.updateTime = SystemClock.elapsedRealtime();
-                MediaListenerService.nowPlaying.setValue(info);
+                setBroadcastInfo(info);
             }
         }
     };
@@ -447,13 +511,27 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupMusic() {
         btnPlayPause.setOnClickListener(v -> {
-            if (!MediaListenerService.togglePlayPause()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+            boolean playing = avrcpInfo != null && avrcpInfo.isPlaying;
+            if (MediaListenerService.hasController()) {
+                MediaListenerService.togglePlayPause();
+            } else if (!avrcpPassThrough(playing ? 0x46 : 0x44)
+                    && !MediaListenerService.togglePlayPause()) {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+            }
         });
         btnPrev.setOnClickListener(v -> {
-            if (!MediaListenerService.skipToPrevious()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+            if (MediaListenerService.hasController()) {
+                MediaListenerService.skipToPrevious();
+            } else if (!avrcpPassThrough(0x4C) && !MediaListenerService.skipToPrevious()) {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+            }
         });
         btnNext.setOnClickListener(v -> {
-            if (!MediaListenerService.skipToNext()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT);
+            if (MediaListenerService.hasController()) {
+                MediaListenerService.skipToNext();
+            } else if (!avrcpPassThrough(0x4B) && !MediaListenerService.skipToNext()) {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT);
+            }
         });
 
         findViewById(R.id.musicCard).setOnClickListener(v -> {
@@ -472,6 +550,26 @@ public class MainActivity extends AppCompatActivity {
             currentInfo = info;
             renderMusic();
         });
+    }
+
+    /** Envía un comando AVRCP (play 0x44, pausa 0x46, siguiente 0x4B, anterior 0x4C) al teléfono. */
+    private boolean avrcpPassThrough(int opId) {
+        BluetoothProfile proxy = btProxies.get(12);
+        if (proxy == null) return false;
+        try {
+            BluetoothDevice dev = connectedBtDevice;
+            List<BluetoothDevice> list = proxy.getConnectedDevices();
+            if (list != null && !list.isEmpty()) dev = list.get(0);
+            if (dev == null) return false;
+            java.lang.reflect.Method m = proxy.getClass().getMethod("sendPassThroughCmd",
+                    BluetoothDevice.class, int.class, int.class);
+            m.invoke(proxy, dev, opId, 0); // tecla abajo
+            m.invoke(proxy, dev, opId, 1); // tecla arriba
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "AVRCP pass-through no disponible", t);
+            return false;
+        }
     }
 
     /** Abre la app de Bluetooth/música de fábrica del radio. */
@@ -516,8 +614,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** La sesión del sistema manda si trae título; si no, los datos AVRCP del Bluetooth. */
+    private MediaListenerService.NowPlayingInfo effectiveInfo() {
+        if (currentInfo != null && currentInfo.title != null && !currentInfo.title.isEmpty()) return currentInfo;
+        if (avrcpInfo != null) return avrcpInfo;
+        return currentInfo;
+    }
+
     private void renderMusic() {
-        MediaListenerService.NowPlayingInfo info = currentInfo;
+        MediaListenerService.NowPlayingInfo info = effectiveInfo();
         if (info == null) {
             songTitle.setText("Sin reproducción");
             songArtist.setText("");
@@ -540,7 +645,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateProgress() {
-        MediaListenerService.NowPlayingInfo info = currentInfo;
+        MediaListenerService.NowPlayingInfo info = effectiveInfo();
         if (info == null || info.duration <= 0) {
             musicProgress.setProgress(0);
             return;
@@ -559,7 +664,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         notifAccess = now;
-        if (currentInfo == null) renderMusic();
+        if (effectiveInfo() == null) renderMusic();
     }
 
     private void openNotificationAccessSettings() {
@@ -870,6 +975,8 @@ public class MainActivity extends AppCompatActivity {
         sb.append("Permiso ubicación: ").append(has(Manifest.permission.ACCESS_FINE_LOCATION) ? "SÍ" : "NO").append("\n");
         sb.append("Bluetooth: ").append(bluetoothAdapter == null ? "no existe"
                 : (bluetoothAdapter.isEnabled() ? "encendido" : "apagado")).append("\n");
+        sb.append("AVRCP (control Bluetooth): ").append(btProxies.get(12) != null ? "conectado" : "no disponible")
+                .append(" | datos: ").append(avrcpDebug).append("\n");
         sb.append("Dispositivo conectado: ").append(connectedBtName == null ? "(ninguno detectado)" : connectedBtName).append("\n\n");
 
         sb.append("Sesiones de medios del sistema:\n");
