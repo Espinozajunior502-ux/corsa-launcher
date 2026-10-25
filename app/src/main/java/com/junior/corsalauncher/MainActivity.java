@@ -145,7 +145,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tripText, volText;
     private VolumeSlider volSlider;
     private TwCommand tw;
-    private int volMax = 40;
+    private int volMax = 30;
     private int volLevel = -1;
     private long lastVolSentAt = 0;
     private int lastVolSent = -1;
@@ -1143,10 +1143,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateVolume() {
         if (tw != null && tw.isConnected()) {
-            if (volLevel < 0) tw.getVolume();
+            tw.getVolume(); // pide el nivel real (también cuando usas los botones físicos)
             return;
         }
         if (volSlider.isDragging() || System.currentTimeMillis() - volTouchedAt < 1200) return;
+        if (tw != null) return; // sin servicio de la radio: la barra no se reescribe sola
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
@@ -1233,6 +1234,18 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnCloseDiag).setOnClickListener(v -> diagOverlay.setVisibility(View.GONE));
         findViewById(R.id.btnRefreshDiag).setOnClickListener(v -> diagText.setText(buildDiagnostics()));
         findViewById(R.id.btnAnalyze).setOnClickListener(v -> analyzeBtApp());
+        findViewById(R.id.btnTestUp).setOnClickListener(v -> {
+            if (tw != null) tw.volumeUp();
+            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
+        });
+        findViewById(R.id.btnTestDown).setOnClickListener(v -> {
+            if (tw != null) tw.volumeDown();
+            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
+        });
+        findViewById(R.id.btnTestVal).setOnClickListener(v -> {
+            if (tw != null) tw.volumeValue(15);
+            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
+        });
         findViewById(R.id.btnCopyApk).setOnClickListener(v -> {
             if (has(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
                 copyApks();
@@ -1332,7 +1345,8 @@ public class MainActivity extends AppCompatActivity {
         sb.append("Volumen radio: ").append(tw != null && tw.isConnected() ? "conectado" : "NO conectado")
                 .append(" | nivel ").append(tw == null ? -1 : tw.lastSystemVolume)
                 .append(" | estado ").append(tw == null ? -1 : tw.lastVolumeStatus)
-                .append(" | máx usado ").append(volMax).append("\n");
+                .append(" | máx usado ").append(volMax).append("\n")
+                .append(tw == null ? "" : tw.dumpLog());
         sb.append("Acceso de uso (anti launcher de fábrica): ").append(KeepAliveService.hasUsageAccess(this) ? "SÍ" : "NO").append("\n");
         sb.append("Sesión de música activa en la app: ").append(MediaListenerService.hasController() ? "SÍ" : "NO").append("\n");
         sb.append("Último aviso de música recibido: ").append(lastBroadcast).append("\n");

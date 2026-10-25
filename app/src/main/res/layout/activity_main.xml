@@ -632,6 +632,33 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/btnTestUp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="VOL▲"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/btnTestDown"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="VOL▼"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/btnTestVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="VOL=15"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
                 android:id="@+id/btnAnalyze"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

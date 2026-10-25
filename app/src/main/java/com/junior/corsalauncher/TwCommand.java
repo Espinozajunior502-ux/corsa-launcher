@@ -41,6 +41,19 @@ public class TwCommand {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private IBinder service;
     private boolean binding = false;
+    private final java.util.ArrayList<String> log = new java.util.ArrayList<>();
+
+    private synchronized void note(String m) {
+        log.add(String.format(java.util.Locale.US, "%tT ", java.util.Calendar.getInstance()) + m);
+        while (log.size() > 14) log.remove(0);
+    }
+
+    public synchronized String dumpLog() {
+        StringBuilder sb = new StringBuilder();
+        for (String l : log) sb.append("  ").append(l).append('\n');
+        return sb.length() == 0 ? "  (sin eventos)\n" : sb.toString();
+    }
+
     public volatile int lastSystemVolume = -1;
     public volatile int lastVolumeStatus = -1;
 
@@ -62,6 +75,7 @@ public class TwCommand {
                 final int v = data.readInt();
                 if (code == 1) lastSystemVolume = v;
                 else lastVolumeStatus = v;
+                note("callback " + (code == 1 ? "onSystemVolume" : "onVolumeStatus") + "=" + v);
                 if (reply != null) reply.writeNoException();
                 if (code == 1) ui.post(() -> listener.onVolume(v));
                 return true;
@@ -75,6 +89,7 @@ public class TwCommand {
         public void onServiceConnected(ComponentName name, IBinder b) {
             service = b;
             binding = false;
+            note("servicio conectado");
             try {
                 Parcel d = Parcel.obtain(), r = Parcel.obtain();
                 d.writeInterfaceToken(DESC);
@@ -93,6 +108,7 @@ public class TwCommand {
         public void onServiceDisconnected(ComponentName name) {
             service = null;
             binding = false;
+            note("servicio desconectado");
             listener.onConnected(false);
         }
     };
@@ -103,8 +119,10 @@ public class TwCommand {
             Intent i = new Intent(SERVICE_ACTION);
             i.setComponent(new ComponentName(SERVICE_PKG, SERVICE_CLS));
             binding = ctx.bindService(i, conn, Context.BIND_AUTO_CREATE);
+            note("bindService -> " + binding);
             if (!binding) listener.onConnected(false);
         } catch (Exception e) {
+            note("bindService error: " + e);
             binding = false;
             listener.onConnected(false);
         }
@@ -126,9 +144,18 @@ public class TwCommand {
         try {
             d.writeInterfaceToken(DESC);
             if (arg != null) d.writeInt(arg);
-            s.transact(code, d, r, 0);
+            boolean ok = s.transact(code, d, r, 0);
+            try {
+                r.readException();
+            } catch (Exception ex) {
+                note("t" + code + (arg != null ? "(" + arg + ")" : "") + " excepción: " + ex);
+                return false;
+            }
+            if (code != T_GET_VOLUME && code != T_GET_VOLUME_STATUS)
+                note("t" + code + (arg != null ? "(" + arg + ")" : "") + " -> " + ok);
             return true;
         } catch (Exception e) {
+            note("t" + code + " error: " + e);
             return false;
         } finally {
             r.recycle();
@@ -150,6 +177,10 @@ public class TwCommand {
 
     public boolean volumeValue(int v) {
         return call(T_VOLUME_VALUE, v);
+    }
+
+    public boolean getVolumeStatus() {
+        return call(T_GET_VOLUME_STATUS, null);
     }
 
     public boolean getVolume() {
