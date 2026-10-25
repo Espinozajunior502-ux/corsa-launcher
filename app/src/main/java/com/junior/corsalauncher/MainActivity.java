@@ -1245,18 +1245,7 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnRefreshDiag).setOnClickListener(v -> diagText.setText(buildDiagnostics()));
         findViewById(R.id.btnAnalyze).setOnClickListener(v -> analyzeBtApp());
         findViewById(R.id.btnRadio).setOnClickListener(v -> analyzeRadio());
-        findViewById(R.id.btnTestUp).setOnClickListener(v -> {
-            if (tw != null) tw.volumeUp();
-            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
-        });
-        findViewById(R.id.btnTestDown).setOnClickListener(v -> {
-            if (tw != null) tw.volumeDown();
-            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
-        });
-        findViewById(R.id.btnTestVal).setOnClickListener(v -> {
-            if (tw != null) tw.volumeValue(15);
-            mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
-        });
+        findViewById(R.id.btnReport).setOnClickListener(v -> generateReport());
         findViewById(R.id.btnCopyApk).setOnClickListener(v -> {
             if (has(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
                 copyApks();
@@ -1396,6 +1385,29 @@ public class MainActivity extends AppCompatActivity {
         sb.append("\nÚltimas teclas recibidas (presiona VOL+/VOL- y pulsa Analizar radio):\n");
         for (String k : keyLog) sb.append("  ").append(k).append("\n");
         diagText.setText(sb.toString());
+    }
+
+    /** Informe completo del equipo: se guarda en Descargas y se resume en pantalla. */
+    private void generateReport() {
+        diagText.setText("Generando informe…");
+        Executors.newSingleThreadExecutor().execute(() -> {
+            final RadioReport rep = RadioReport.build(this);
+            String msg;
+            try {
+                File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+                dir.mkdirs();
+                File out = new File(dir, "corsa_informe.txt");
+                try (OutputStream os = new FileOutputStream(out)) {
+                    os.write(("INFORME DEL EQUIPO\n" + rep.summary + "\n" + rep.full).getBytes("UTF-8"));
+                }
+                msg = "Archivo guardado: Descargas/corsa_informe.txt (" + out.length() / 1024 + " KB)";
+            } catch (Exception e) {
+                msg = "No pude guardar el archivo (" + e + "). Permite el almacenamiento con «Copiar APK» primero.";
+            }
+            final String m = msg;
+            mainHandler.post(() -> diagText.setText("INFORME DEL EQUIPO\n\n" + rep.summary + "\n" + m
+                    + "\n\nEnvíame ese archivo o las fotos de esta pantalla."));
+        });
     }
 
     private final List<String> keyLog = new ArrayList<>();
