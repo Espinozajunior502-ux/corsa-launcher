@@ -34,6 +34,7 @@ import android.service.notification.NotificationListenerService;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
@@ -139,6 +140,22 @@ public class MainActivity extends AppCompatActivity {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    // ---- modo conducción, velocidad, volumen ----
+    private View dimOverlay, speedPill;
+    private TextView tripText, volText;
+    private ProgressBar volBar;
+    private boolean driving = false;
+    private long slowSince = 0;
+    private float tripKm = 0f;
+    private Location lastTripLoc = null;
+    private int tripSaveCounter = 0;
+    private int dayMode = 0; // 0 = auto, 1 = día, 2 = noche
+    private int alertLimit = 0; // km/h, 0 = sin alerta
+    private boolean overLimit = false;
+    private long lastBeepAt = 0;
+    private static final int[] LIMITS = {0, 50, 60, 80, 90, 100, 120};
+    private android.content.SharedPreferences prefs;
+
     private final Runnable clockTick = new Runnable() {
         @Override
         public void run() {
@@ -149,6 +166,7 @@ public class MainActivity extends AppCompatActivity {
             int hour = c.get(Calendar.HOUR_OF_DAY);
             String saludo = hour < 12 ? "Buenos días" : (hour < 19 ? "Buenas tardes" : "Buenas noches");
             greetingText.setText(saludo + ", " + USER_NAME);
+            applyDim(hour);
             mainHandler.postDelayed(this, 10000);
         }
     };
@@ -157,6 +175,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void run() {
             updateProgress();
+            updateVolume();
             mainHandler.postDelayed(this, 1000);
         }
     };
@@ -355,15 +374,31 @@ public class MainActivity extends AppCompatActivity {
         diagText = findViewById(R.id.diagText);
         appGrid = findViewById(R.id.appGrid);
         carView = findViewById(R.id.carImage);
+        dimOverlay = findViewById(R.id.dimOverlay);
+        speedPill = findViewById(R.id.speedPill);
+        tripText = findViewById(R.id.tripText);
+        volText = findViewById(R.id.volText);
+        volBar = findViewById(R.id.volBar);
+        prefs = getSharedPreferences("corsa", MODE_PRIVATE);
+        tripKm = prefs.getFloat("tripKm", 0f);
+        alertLimit = prefs.getInt("alertLimit", 0);
+        dayMode = prefs.getInt("dayMode", 0);
+        showCachedWeather();
 
         setupDock();
         setupDrawer();
         setupMusic();
         setupBluetooth();
         setupDiagnostics();
-        startSniffer();
-        requestNeededPermissions();
-        KeepAliveService.start(this);
+        setupDriveExtras();
+        updateTripText();
+        // Lo pesado se hace después de pintar la pantalla, para que el arranque sea inmediato
+        mainHandler.postDelayed(() -> {
+            startSniffer();
+            requestNeededPermissions();
+            KeepAliveService.start(this);
+        }, 400);
+        mainHandler.postDelayed(this::loadApps, 2500);
     }
 
     @Override
@@ -396,6 +431,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        if (prefs != null) prefs.edit().putFloat("tripKm", tripKm).apply();
         mainHandler.removeCallbacks(clockTick);
         mainHandler.removeCallbacks(progressTick);
         super.onPause();
@@ -967,6 +1003,168 @@ public class MainActivity extends AppCompatActivity {
         if (kmh < 3f) kmh = 0f; // filtra el ruido del GPS parado
         speedValue.setText(String.format(Locale.getDefault(), "%.0f", kmh));
         carView.setSpeed(kmh);
+
+        // Kilómetros del viaje
+        if (kmh >= 3f && lastTripLoc != null) {
+            float d = lastTripLoc.distanceTo(location);
+            if (d > 0f && d < 500f) tripKm += d / 1000f;
+        }
+        lastTripLoc = location;
+        updateTripText();
+        if (++tripSaveCounter % 10 == 0) prefs.edit().putFloat("tripKm", tripKm).apply();
+
+        // Modo conducción (con histéresis para que no parpadee)
+        long now = System.currentTimeMillis();
+        if (kmh >= 8f) {
+            slowSince = 0;
+            if (!driving) setDriving(true);
+        } else if (kmh < 3f) {
+            if (slowSince == 0) slowSince = now;
+            if (driving && now - slowSince > 10000) setDriving(false);
+        }
+
+        // Alerta de velocidad
+        boolean over = alertLimit > 0 && kmh > alertLimit + 2;
+        if (over != overLimit) {
+            overLimit = over;
+            speedValue.setTextColor(over ? 0xFFFF4D4D : getResources().getColor(R.color.text_primary));
+        }
+        if (over && now - lastBeepAt > 20000) {
+            lastBeepAt = now;
+            try {
+                new android.media.ToneGenerator(AudioManager.STREAM_NOTIFICATION, 70)
+                        .startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 400);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void updateTripText() {
+        tripText.setText(String.format(Locale.getDefault(), "%.1f km", tripKm));
+    }
+
+    /** En marcha: botones grandes y sin adornos. Parado: vista normal. */
+    private void setDriving(boolean on) {
+        driving = on;
+        float fade = on ? 0f : 1f;
+        float grow = on ? 1.28f : 1f;
+        int[] icons = {R.id.dockIcon0, R.id.dockIcon1, R.id.dockIcon2, R.id.dockIcon3};
+        for (int id : icons) findViewById(id).animate().scaleX(on ? 1.35f : 1f).scaleY(on ? 1.35f : 1f).setDuration(300).start();
+        View[] quiet = {dateText, weatherPill, songAlbum, findViewById(R.id.btnApps)};
+        for (View v : quiet) v.animate().alpha(on ? 0.0f : 1f).setDuration(300).start();
+        View[] big = {btnPrev, btnPlayPause, btnNext};
+        for (View v : big) v.animate().scaleX(grow).scaleY(grow).setDuration(300).start();
+        speedPill.setPivotX(speedPill.getWidth());
+        speedPill.animate().scaleX(on ? 1.25f : 1f).scaleY(on ? 1.25f : 1f).setDuration(300).start();
+    }
+
+    private void applyDim(int hour) {
+        boolean night = dayMode == 2 || (dayMode == 0 && (hour >= 18 || hour < 6));
+        dimOverlay.animate().alpha(night ? 0.34f : 0f).setDuration(600).start();
+    }
+
+    private void setupDriveExtras() {
+        // Tocar la hora: Automático / Día / Noche
+        clockText.setOnClickListener(v -> {
+            dayMode = (dayMode + 1) % 3;
+            prefs.edit().putInt("dayMode", dayMode).apply();
+            Toast.makeText(this, dayMode == 0 ? "Pantalla: automática (noche desde las 18:00)"
+                    : dayMode == 1 ? "Pantalla: modo día" : "Pantalla: modo noche", Toast.LENGTH_SHORT).show();
+            applyDim(Calendar.getInstance().get(Calendar.HOUR_OF_DAY));
+        });
+        // Tocar la velocidad: cambia el límite de alerta. Mantener: reinicia el viaje
+        speedPill.setOnClickListener(v -> {
+            int idx = 0;
+            for (int i = 0; i < LIMITS.length; i++) if (LIMITS[i] == alertLimit) idx = i;
+            alertLimit = LIMITS[(idx + 1) % LIMITS.length];
+            prefs.edit().putInt("alertLimit", alertLimit).apply();
+            Toast.makeText(this, alertLimit == 0 ? "Alerta de velocidad: desactivada"
+                    : "Alerta de velocidad: " + alertLimit + " km/h", Toast.LENGTH_SHORT).show();
+        });
+        speedPill.setOnLongClickListener(v -> {
+            tripKm = 0f;
+            prefs.edit().putFloat("tripKm", 0f).apply();
+            updateTripText();
+            Toast.makeText(this, "Viaje reiniciado", Toast.LENGTH_SHORT).show();
+            return true;
+        });
+
+        // Volumen con repetición al mantener presionado
+        bindVolumeButton(findViewById(R.id.btnVolDown), AudioManager.ADJUST_LOWER);
+        bindVolumeButton(findViewById(R.id.btnVolUp), AudioManager.ADJUST_RAISE);
+        findViewById(R.id.btnEq).setOnClickListener(v -> openEqualizer());
+        updateVolume();
+    }
+
+    private void bindVolumeButton(View b, final int dir) {
+        final Runnable[] rep = new Runnable[1];
+        rep[0] = () -> {
+            changeVolume(dir);
+            mainHandler.postDelayed(rep[0], 160);
+        };
+        b.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    v.setPressed(true);
+                    changeVolume(dir);
+                    mainHandler.postDelayed(rep[0], 450);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    v.setPressed(false);
+                    mainHandler.removeCallbacks(rep[0]);
+                    return true;
+            }
+            return true;
+        });
+    }
+
+    private void changeVolume(int dir) {
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, 0);
+        } catch (Exception ignored) {
+        }
+        updateVolume();
+    }
+
+    private void updateVolume() {
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+            volBar.setMax(max);
+            volBar.setProgress(cur);
+            volText.setText(String.valueOf(cur));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void openEqualizer() {
+        try {
+            Intent eq = new Intent("android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL");
+            eq.putExtra("android.media.extra.AUDIO_SESSION", 0);
+            eq.putExtra("android.media.extra.CONTENT_TYPE", 0);
+            if (eq.resolveActivity(getPackageManager()) != null) {
+                eq.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(eq);
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        if (launchByLabel("ecualiz", "equaliz", "equalizer", "sonido", "sound", "audio", "dsp")) return;
+        launch(new Intent(android.provider.Settings.ACTION_SOUND_SETTINGS));
+    }
+
+    // Clima guardado: se ve al instante al encender, antes de que llegue el GPS
+    private void showCachedWeather() {
+        try {
+            if (!prefs.contains("wTemp")) return;
+            weatherText.setText(prefs.getLong("wTemp", 0) + "°C");
+            weatherIcon.setImageResource(prefs.getInt("wCode", 0) <= 1 ? R.drawable.ic_sun : R.drawable.ic_cloud);
+            weatherPill.setVisibility(View.VISIBLE);
+        } catch (Exception ignored) {
+        }
     }
 
     private void maybeFetchWeather(Location loc) {
@@ -992,6 +1190,7 @@ public class MainActivity extends AppCompatActivity {
                 long temp = Math.round(cur.getDouble("temperature_2m"));
                 int code = cur.optInt("weather_code", 0);
                 lastWeatherAt = System.currentTimeMillis();
+                prefs.edit().putLong("wTemp", temp).putInt("wCode", code).apply();
                 mainHandler.post(() -> {
                     weatherText.setText(temp + "°C");
                     weatherIcon.setImageResource(code <= 1 ? R.drawable.ic_sun : R.drawable.ic_cloud);

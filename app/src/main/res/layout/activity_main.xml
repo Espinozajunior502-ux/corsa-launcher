@@ -420,6 +420,79 @@
                         android:src="@drawable/ic_next" />
                 </LinearLayout>
 
+                <!-- Volumen -->
+                <LinearLayout
+                    android:id="@+id/volumeRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/bg_card"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp">
+
+                    <TextView
+                        android:id="@+id/btnVolDown"
+                        android:layout_width="64dp"
+                        android:layout_height="52dp"
+                        android:gravity="center"
+                        android:text="−"
+                        android:textColor="@color/text_primary"
+                        android:textSize="34sp"
+                        android:background="?android:attr/selectableItemBackground" />
+
+                    <ProgressBar
+                        android:id="@+id/volBar"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="0dp"
+                        android:layout_height="8dp"
+                        android:layout_weight="1"
+                        android:max="30"
+                        android:progress="0"
+                        android:progressDrawable="@drawable/progress_music" />
+
+                    <TextView
+                        android:id="@+id/btnVolUp"
+                        android:layout_width="64dp"
+                        android:layout_height="52dp"
+                        android:gravity="center"
+                        android:text="+"
+                        android:textColor="@color/text_primary"
+                        android:textSize="34sp"
+                        android:background="?android:attr/selectableItemBackground" />
+
+                    <TextView
+                        android:id="@+id/volText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="44dp"
+                        android:gravity="center"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="18sp" />
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="30dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@color/divider" />
+
+                    <TextView
+                        android:id="@+id/btnEq"
+                        android:layout_width="wrap_content"
+                        android:layout_height="52dp"
+                        android:gravity="center"
+                        android:paddingStart="20dp"
+                        android:paddingEnd="20dp"
+                        android:text="EQ"
+                        android:textColor="@color/accent"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:background="?android:attr/selectableItemBackground" />
+                </LinearLayout>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
@@ -459,6 +532,7 @@
                     </LinearLayout>
 
                     <LinearLayout
+                        android:id="@+id/speedPill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="16dp"
@@ -486,6 +560,21 @@
                             android:text="km/h"
                             android:textColor="@color/text_secondary"
                             android:textSize="22sp" />
+
+                        <View
+                            android:layout_width="1dp"
+                            android:layout_height="30dp"
+                            android:layout_marginStart="18dp"
+                            android:layout_marginEnd="18dp"
+                            android:background="@color/divider" />
+
+                        <TextView
+                            android:id="@+id/tripText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="0.0 km"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="20sp" />
                     </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
@@ -618,5 +707,13 @@
                 android:textSize="13sp" />
         </ScrollView>
     </LinearLayout>
+
+    <!-- Atenuador nocturno (no intercepta toques) -->
+    <View
+        android:id="@+id/dimOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:alpha="0" />
 
 </RelativeLayout>
