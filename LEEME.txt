@@ -1,0 +1,62 @@
+CORSA LAUNCHER - cómo obtener el .apk
+=======================================
+
+Este proyecto se compila solo, en la nube de GitHub, gratis. No necesitas
+instalar nada en tu computadora.
+
+PASO 1 - Crear cuenta y repositorio en GitHub (si no tienes)
+--------------------------------------------------------------
+1. Ve a https://github.com y crea una cuenta gratis (si no tienes una).
+2. Haz clic en el botón "+" arriba a la derecha → "New repository".
+3. Ponle un nombre, por ejemplo "corsa-launcher".
+4. Déjalo como "Private" o "Public", como prefieras.
+5. NO marques "Add a README file".
+6. Dale "Create repository".
+
+PASO 2 - Subir esta carpeta
+------------------------------
+1. En la página del repositorio recién creado, busca el enlace que dice
+   "uploading an existing file".
+2. Arrastra TODA esta carpeta (todo su contenido, incluyendo la carpeta
+   oculta .github) a esa página.
+3. Dale "Commit changes" (puedes dejar el mensaje por defecto).
+
+PASO 3 - Esperar a que se compile
+------------------------------------
+1. Ve a la pestaña "Actions" arriba del repositorio.
+2. Vas a ver un proceso corriendo ("Compilar APK"). Espera 2-4 minutos
+   a que termine (círculo verde con un check).
+3. Haz clic en ese proceso terminado.
+4. Abajo de todo, en "Artifacts", vas a ver "CorsaLauncher-apk".
+   Descárgalo (se baja como un .zip).
+5. Descomprime ese .zip: adentro está "app-debug.apk".
+
+PASO 4 - Instalar en tu radio
+--------------------------------
+1. Copia "app-debug.apk" a una memoria USB.
+2. Métela al radio del carro.
+3. Abre el explorador de archivos del radio, busca el .apk y tócalo
+   para instalarlo. Puede pedirte permitir "instalar apps de fuentes
+   desconocidas" la primera vez - acéptalo.
+4. Abre la app "Corsa Launcher" una vez para darle los permisos que
+   pide (ubicación, notificaciones, Bluetooth).
+5. Para que sea la pantalla de inicio: Ajustes del radio → Apps →
+   Aplicación de inicio predeterminada → elige "Corsa Launcher".
+
+LISTA DE APPS
+-------------
+El botón "Apps" del dock abre la lista de todas las apps instaladas en el
+radio (Spotify, radio, ajustes, etc.). Atrás o HOME la cierra.
+
+NOTAS
+-----
+- Para ver la canción que suena: toca el texto "Toca aquí para activar
+  la música" en la tarjeta de música y activa "Corsa Launcher" en
+  Acceso a notificaciones. Regresa con el botón Atrás.
+- La velocidad usa el GPS de tu radio; dale permiso de ubicación.
+- El Bluetooth se reconecta solo a dispositivos ya emparejados,
+  como ya hace tu radio de por sí - la app solo muestra el nombre
+  del dispositivo conectado.
+- Si algo no compila (la pestaña Actions muestra una X roja), haz
+  clic ahí, copia el error en rojo que aparece, y pégamelo para
+  corregirlo.
