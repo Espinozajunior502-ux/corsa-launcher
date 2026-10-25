@@ -1108,11 +1108,14 @@ public class MainActivity extends AppCompatActivity {
         // (broadcast del asistente de voz de la radio) hasta llegar al nivel pedido.
         volSlider.setOnChange((frac, finished) -> {
             volTouchedAt = System.currentTimeMillis();
-            int mx = volStreamMax();
-            volTargetStream = Math.round(frac * mx);
-            volText.setText(String.valueOf(Math.round(frac * 30)));
-            volNoProgress = 0;
+            int t = Math.round(frac * 30);
+            volText.setText(String.valueOf(t));
+            if (!finished) return; // se aplica al soltar: evita mandar docenas de ordenes mientras arrastras
             mainHandler.removeCallbacks(volDriver);
+            mainHandler.removeCallbacks(volVerify);
+            volTarget30 = t;
+            volRounds = 0;
+            volPending = t - volNow30();
             mainHandler.post(volDriver);
         });
         findViewById(R.id.btnEq).setOnClickListener(v -> openEqualizer());
@@ -1120,21 +1123,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private static final int VOL_STREAM = 5; // en esta radio refleja el volumen real del MCU
-    private int volTargetStream = -1, volNoProgress = 0, volLastSeen = -1;
+    private int volTarget30 = -1;      // objetivo en escala 0..30
+    private int volPending = 0;        // pasos que faltan por mandar (+ sube, - baja)
+    private int volRounds = 0;
 
+    /** Nivel real en escala 0..30. */
+    private int volNow30() {
+        return Math.round(volStreamNow() * 30f / volStreamMax());
+    }
+
+    // Manda UN paso cada 160 ms (sin depender de la lectura, que llega con retraso);
+    // al terminar espera, vuelve a leer y corrige como maximo 3 veces.
     private final Runnable volDriver = new Runnable() {
         @Override
         public void run() {
-            if (volTargetStream < 0) return;
-            int cur = volStreamNow();
-            if (cur == volTargetStream) { volTargetStream = -1; return; }
-            if (cur == volLastSeen) volNoProgress++; else volNoProgress = 0;
-            volLastSeen = cur;
-            if (volNoProgress > 12) { volTargetStream = -1; return; }
+            if (volTarget30 < 0) return;
+            if (volPending == 0) {
+                mainHandler.postDelayed(volVerify, 700);
+                return;
+            }
             Intent i = new Intent("com.unisound.unicar.broadcast.action");
-            i.putExtra("type", cur < volTargetStream ? "volumeup" : "volumedown");
+            i.putExtra("type", volPending > 0 ? "volumeup" : "volumedown");
             try { sendBroadcast(i); } catch (Exception ignored) { }
-            mainHandler.postDelayed(this, 130);
+            volPending += volPending > 0 ? -1 : 1;
+            mainHandler.postDelayed(this, 160);
+        }
+    };
+
+    private final Runnable volVerify = new Runnable() {
+        @Override
+        public void run() {
+            if (volTarget30 < 0) return;
+            int diff = volTarget30 - volNow30();
+            if (diff == 0 || ++volRounds > 3) { volTarget30 = -1; return; }
+            volPending = diff;
+            mainHandler.post(volDriver);
         }
     };
 
@@ -1153,12 +1176,11 @@ public class MainActivity extends AppCompatActivity {
 
     /** Sigue los botones fisicos: lee el nivel real cada segundo. */
     private void updateVolume() {
-        if (volSlider.isDragging() || volTargetStream >= 0
+        if (volSlider.isDragging() || volTarget30 >= 0
                 || System.currentTimeMillis() - volTouchedAt < 1500) return;
-        int mx = volStreamMax();
-        int cur = volStreamNow();
-        volSlider.setLevel(cur / (float) mx);
-        volText.setText(String.valueOf(Math.round(cur * 30f / mx)));
+        int cur = volNow30();
+        volSlider.setLevel(cur / 30f);
+        volText.setText(String.valueOf(cur));
     }
 
     private String volStreamsInfo() {
