@@ -2,7 +2,10 @@ package com.junior.corsalauncher;
 
 import android.app.Notification;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
@@ -19,6 +22,7 @@ import android.service.notification.StatusBarNotification;
 import androidx.lifecycle.MutableLiveData;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
 
@@ -36,6 +40,108 @@ public class MediaListenerService extends NotificationListenerService {
     /** Botones de la notificación multimedia (si la hay). */
     private static List<Notification.Action> notifActions = new ArrayList<>();
     private static MediaListenerService instance;
+
+    // ---- AVRCP (datos de la canción que manda el teléfono por Bluetooth) ----
+    public static final String ACTION_AVRCP_TRACK = "android.bluetooth.avrcp-controller.profile.action.TRACK_EVENT";
+    private static final String EXTRA_AVRCP_META = "android.bluetooth.avrcp-controller.profile.extra.METADATA";
+    private static final String EXTRA_AVRCP_PLAY = "android.bluetooth.avrcp-controller.profile.extra.PLAYBACK";
+    private static final String[] AVRCP_ACTIONS = {
+            ACTION_AVRCP_TRACK,
+            "android.bluetooth.avrcp-controller.profile.action.PLAYER_SETTING",
+            "android.bluetooth.avrcp-controller.profile.action.CONNECTION_STATE_CHANGED",
+            "android.bluetooth.a2dp-sink.profile.action.PLAYING_STATE_CHANGED",
+            "android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED"
+    };
+    public static final MutableLiveData<NowPlayingInfo> avrcpNow = new MutableLiveData<>();
+    private static NowPlayingInfo avrcpState = null;
+    public static final List<String> avrcpLog = new ArrayList<>();
+
+    /** Procesa un aviso Bluetooth. Se llama desde el servicio y desde la pantalla. */
+    public static void handleAvrcpIntent(Intent intent) {
+        String action = String.valueOf(intent.getAction());
+        StringBuilder log = new StringBuilder(String.format(java.util.Locale.US, "%tT ", Calendar.getInstance()));
+        log.append(action.replace("android.bluetooth.", "").replace(".profile.action.", ":"));
+        if (intent.getExtras() != null) log.append(" ").append(intent.getExtras().keySet());
+        avrcpLog.add(log.toString());
+        while (avrcpLog.size() > 15) avrcpLog.remove(0);
+
+        NowPlayingInfo info = new NowPlayingInfo();
+        if (avrcpState != null) {
+            info.title = avrcpState.title;
+            info.artist = avrcpState.artist;
+            info.album = avrcpState.album;
+            info.duration = avrcpState.duration;
+            info.isPlaying = avrcpState.isPlaying;
+            info.position = avrcpState.position;
+            info.updateTime = avrcpState.updateTime;
+            info.speed = avrcpState.speed;
+        } else {
+            info.updateTime = SystemClock.elapsedRealtime();
+        }
+        info.source = "Bluetooth";
+        try {
+            if (ACTION_AVRCP_TRACK.equals(action)) {
+                Object m = intent.getParcelableExtra(EXTRA_AVRCP_META);
+                if (m instanceof MediaMetadata) {
+                    MediaMetadata md = (MediaMetadata) m;
+                    String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
+                    String ar = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
+                    String al = md.getString(MediaMetadata.METADATA_KEY_ALBUM);
+                    if (t != null) info.title = t;
+                    if (ar != null) info.artist = ar;
+                    if (al != null) info.album = al;
+                    long d = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                    if (d > 0) info.duration = d;
+                }
+                Object ps = intent.getParcelableExtra(EXTRA_AVRCP_PLAY);
+                if (ps instanceof PlaybackState) {
+                    PlaybackState st = (PlaybackState) ps;
+                    info.isPlaying = st.getState() == PlaybackState.STATE_PLAYING;
+                    info.position = Math.max(0, st.getPosition());
+                    info.updateTime = SystemClock.elapsedRealtime();
+                    info.speed = st.getPlaybackSpeed();
+                }
+            } else if (action.contains("PLAYING_STATE_CHANGED")) {
+                int st = intent.getIntExtra("android.bluetooth.profile.extra.STATE", -1);
+                if (st == 10) info.isPlaying = true;
+                else if (st == 11) info.isPlaying = false;
+                info.updateTime = SystemClock.elapsedRealtime();
+            } else {
+                return;
+            }
+        } catch (Exception e) {
+            avrcpLog.add("error: " + e);
+        }
+        avrcpState = info;
+        avrcpNow.setValue(info);
+    }
+
+    private final BroadcastReceiver avrcpReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            handleAvrcpIntent(intent);
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        IntentFilter f = new IntentFilter();
+        for (String a : AVRCP_ACTIONS) f.addAction(a);
+        try {
+            registerReceiver(avrcpReceiver, f);
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        try {
+            unregisterReceiver(avrcpReceiver);
+        } catch (Exception ignored) {
+        }
+        super.onDestroy();
+    }
 
     public static class NowPlayingInfo {
         public String title = "";

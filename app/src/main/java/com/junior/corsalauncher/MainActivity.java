@@ -89,6 +89,8 @@ public class MainActivity extends AppCompatActivity {
             "fm.last.android.metachanged",
             "com.android.bluetooth.avrcp.metachanged",
             "android.bluetooth.avrcp-controller.profile.action.TRACK_EVENT",
+            "android.bluetooth.a2dp-sink.profile.action.PLAYING_STATE_CHANGED",
+            "android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED",
             "com.android.music.avrcp.metachanged"
     };
 
@@ -119,12 +121,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean notifAccess = false;
     private MediaListenerService.NowPlayingInfo currentInfo = null;
     private String lastBroadcast = "(ninguno)";
-    private static final String ACTION_AVRCP_TRACK = "android.bluetooth.avrcp-controller.profile.action.TRACK_EVENT";
-    private static final String EXTRA_AVRCP_META = "android.bluetooth.avrcp-controller.profile.extra.METADATA";
-    private static final String EXTRA_AVRCP_PLAY = "android.bluetooth.avrcp-controller.profile.extra.PLAYBACK";
     /** Datos que llegan por Bluetooth (AVRCP) directo del iPhone. */
     private MediaListenerService.NowPlayingInfo avrcpInfo = null;
-    private String avrcpDebug = "(sin datos)";
     private final List<String> sniffLog = new ArrayList<>();
     private final Map<String, Set<String>> twActions = new LinkedHashMap<>();
 
@@ -175,8 +173,8 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             lastBroadcast = String.valueOf(intent.getAction());
-            if (ACTION_AVRCP_TRACK.equals(intent.getAction())) {
-                handleAvrcp(intent);
+            if (intent.getAction() != null && (intent.getAction().contains("avrcp") || intent.getAction().contains("PLAYING_STATE"))) {
+                MediaListenerService.handleAvrcpIntent(intent);
                 return;
             }
             String title = firstExtra(intent, "track", "title", "song", "songname");
@@ -197,55 +195,6 @@ public class MainActivity extends AppCompatActivity {
     private void setBroadcastInfo(MediaListenerService.NowPlayingInfo info) {
         avrcpInfo = info;
         renderMusic();
-    }
-
-    /** El aviso TRACK_EVENT trae un MediaMetadata y/o un PlaybackState. */
-    private void handleAvrcp(Intent intent) {
-        MediaListenerService.NowPlayingInfo info = new MediaListenerService.NowPlayingInfo();
-        if (avrcpInfo != null) { // conserva lo anterior si este aviso trae solo una parte
-            info.title = avrcpInfo.title;
-            info.artist = avrcpInfo.artist;
-            info.album = avrcpInfo.album;
-            info.duration = avrcpInfo.duration;
-            info.isPlaying = avrcpInfo.isPlaying;
-            info.position = avrcpInfo.position;
-            info.updateTime = avrcpInfo.updateTime;
-            info.speed = avrcpInfo.speed;
-        }
-        info.source = "Bluetooth";
-        StringBuilder dbg = new StringBuilder();
-        try {
-            Object m = intent.getParcelableExtra(EXTRA_AVRCP_META);
-            if (m instanceof MediaMetadata) {
-                MediaMetadata md = (MediaMetadata) m;
-                String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
-                String ar = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
-                String al = md.getString(MediaMetadata.METADATA_KEY_ALBUM);
-                if (t != null) info.title = t;
-                if (ar != null) info.artist = ar;
-                if (al != null) info.album = al;
-                long d = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
-                if (d > 0) info.duration = d;
-                dbg.append("meta: ").append(t).append(" / ").append(ar).append("  ");
-            }
-            Object ps = intent.getParcelableExtra(EXTRA_AVRCP_PLAY);
-            if (ps instanceof PlaybackState) {
-                PlaybackState st = (PlaybackState) ps;
-                info.isPlaying = st.getState() == PlaybackState.STATE_PLAYING;
-                info.position = Math.max(0, st.getPosition());
-                info.updateTime = SystemClock.elapsedRealtime();
-                info.speed = st.getPlaybackSpeed();
-                dbg.append("estado=").append(st.getState());
-            }
-        } catch (Exception e) {
-            dbg.append("error: ").append(e);
-        }
-        if (dbg.length() == 0) {
-            Bundle ex = intent.getExtras();
-            dbg.append("extras: ").append(ex == null ? "ninguno" : ex.keySet().toString());
-        }
-        avrcpDebug = dbg.toString();
-        setBroadcastInfo(info);
     }
 
     /** Escucha las acciones que declaran las apps com.tw.* del radio y apunta lo que llega. */
@@ -511,7 +460,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupMusic() {
         btnPlayPause.setOnClickListener(v -> {
-            boolean playing = avrcpInfo != null && avrcpInfo.isPlaying;
+            boolean playing = isAudioPlaying();
             if (MediaListenerService.hasController()) {
                 MediaListenerService.togglePlayPause();
             } else if (!avrcpPassThrough(playing ? 0x46 : 0x44)
@@ -550,6 +499,18 @@ public class MainActivity extends AppCompatActivity {
             currentInfo = info;
             renderMusic();
         });
+        MediaListenerService.avrcpNow.observe(this, info -> {
+            avrcpInfo = info;
+            renderMusic();
+        });
+    }
+
+    private boolean isAudioPlaying() {
+        try {
+            return ((AudioManager) getSystemService(Context.AUDIO_SERVICE)).isMusicActive();
+        } catch (Exception e) {
+            return avrcpInfo != null && avrcpInfo.isPlaying;
+        }
     }
 
     /** Envía un comando AVRCP (play 0x44, pausa 0x46, siguiente 0x4B, anterior 0x4C) al teléfono. */
@@ -624,13 +585,14 @@ public class MainActivity extends AppCompatActivity {
     private void renderMusic() {
         MediaListenerService.NowPlayingInfo info = effectiveInfo();
         if (info == null) {
-            songTitle.setText("Sin reproducción");
-            songArtist.setText("");
+            boolean audio = isAudioPlaying();
+            songTitle.setText(audio ? "Reproduciendo por Bluetooth" : "Sin reproducción");
+            songArtist.setText(audio ? "Cambia de canción para ver el nombre" : "");
             songAlbum.setText("");
             sourceText.setText(notifAccess
-                    ? "Reproduce música para verla aquí"
+                    ? "Fuente: Bluetooth"
                     : "Toca la tarjeta para activar la música");
-            btnPlayPause.setImageResource(R.drawable.ic_play);
+            btnPlayPause.setImageResource(audio ? R.drawable.ic_pause : R.drawable.ic_play);
             albumArt.setImageBitmap(null);
             musicProgress.setProgress(0);
             return;
@@ -639,13 +601,73 @@ public class MainActivity extends AppCompatActivity {
         songArtist.setText(info.artist);
         songAlbum.setText(info.album);
         sourceText.setText(info.source == null || info.source.isEmpty() ? "" : "Fuente: " + info.source);
-        btnPlayPause.setImageResource(info.isPlaying ? R.drawable.ic_pause : R.drawable.ic_play);
-        albumArt.setImageBitmap(info.albumArt);
+        boolean playingNow = info == avrcpInfo ? isAudioPlaying() : info.isPlaying;
+        btnPlayPause.setImageResource(playingNow ? R.drawable.ic_pause : R.drawable.ic_play);
+        if (info.albumArt != null) {
+            albumArt.setImageBitmap(info.albumArt);
+        } else {
+            requestArt(info.title, info.artist);
+            String key = info.title + "|" + info.artist;
+            albumArt.setImageBitmap(key.equals(artKey) ? artBitmap : null);
+        }
         updateProgress();
+    }
+
+    // ---- portada por internet (el iPhone no la manda por Bluetooth) ----
+    private String artKey = "";
+    private android.graphics.Bitmap artBitmap = null;
+    private String artRequested = "";
+
+    private void requestArt(String title, String artist) {
+        if (title == null || title.isEmpty()) return;
+        final String key = title + "|" + artist;
+        if (key.equals(artRequested)) return;
+        artRequested = key;
+        final String term = title + " " + (artist == null ? "" : artist);
+        Executors.newSingleThreadExecutor().execute(() -> {
+            HttpURLConnection c = null;
+            try {
+                URL u = new URL("https://itunes.apple.com/search?entity=song&limit=1&term="
+                        + java.net.URLEncoder.encode(term, "UTF-8"));
+                c = (HttpURLConnection) u.openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(8000);
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) sb.append(line);
+                }
+                org.json.JSONArray arr = new JSONObject(sb.toString()).getJSONArray("results");
+                if (arr.length() == 0) return;
+                String art = arr.getJSONObject(0).optString("artworkUrl100", "");
+                if (art.isEmpty()) return;
+                art = art.replace("100x100", "600x600");
+                HttpURLConnection c2 = (HttpURLConnection) new URL(art).openConnection();
+                c2.setConnectTimeout(8000);
+                c2.setReadTimeout(8000);
+                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeStream(c2.getInputStream());
+                c2.disconnect();
+                if (bmp != null) {
+                    mainHandler.post(() -> {
+                        artKey = key;
+                        artBitmap = bmp;
+                        renderMusic();
+                    });
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Portada no disponible", e);
+                artRequested = ""; // permitir reintento
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        });
     }
 
     private void updateProgress() {
         MediaListenerService.NowPlayingInfo info = effectiveInfo();
+        if (info == null || info == avrcpInfo) {
+            btnPlayPause.setImageResource(isAudioPlaying() ? R.drawable.ic_pause : R.drawable.ic_play);
+        }
         if (info == null || info.duration <= 0) {
             musicProgress.setProgress(0);
             return;
@@ -976,7 +998,11 @@ public class MainActivity extends AppCompatActivity {
         sb.append("Bluetooth: ").append(bluetoothAdapter == null ? "no existe"
                 : (bluetoothAdapter.isEnabled() ? "encendido" : "apagado")).append("\n");
         sb.append("AVRCP (control Bluetooth): ").append(btProxies.get(12) != null ? "conectado" : "no disponible")
-                .append(" | datos: ").append(avrcpDebug).append("\n");
+                .append(" | audio sonando: ").append(isAudioPlaying() ? "SÍ" : "NO")
+                .append(" | datos: ").append(avrcpInfo == null ? "(sin datos)" : avrcpInfo.title + " / " + avrcpInfo.artist).append("\n");
+        sb.append("Avisos Bluetooth recibidos:\n");
+        if (MediaListenerService.avrcpLog.isEmpty()) sb.append("  (ninguno aún)\n");
+        for (String l : MediaListenerService.avrcpLog) sb.append("  ").append(l).append("\n");
         sb.append("Dispositivo conectado: ").append(connectedBtName == null ? "(ninguno detectado)" : connectedBtName).append("\n\n");
 
         sb.append("Sesiones de medios del sistema:\n");
