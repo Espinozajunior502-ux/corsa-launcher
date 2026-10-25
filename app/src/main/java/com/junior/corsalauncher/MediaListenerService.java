@@ -1,8 +1,13 @@
 package com.junior.corsalauncher;
 
+import android.app.Notification;
+import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -13,7 +18,9 @@ import android.service.notification.StatusBarNotification;
 
 import androidx.lifecycle.MutableLiveData;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Lee qué se está reproduciendo en cualquier app con MediaSession
@@ -24,6 +31,11 @@ public class MediaListenerService extends NotificationListenerService {
 
     public static final MutableLiveData<NowPlayingInfo> nowPlaying = new MutableLiveData<>();
     private static MediaController activeController;
+    /** true si la sesión activa entrega título (si no, los controles no sirven). */
+    private static boolean controllerUsable = false;
+    /** Botones de la notificación multimedia (si la hay). */
+    private static List<Notification.Action> notifActions = new ArrayList<>();
+    private static MediaListenerService instance;
 
     public static class NowPlayingInfo {
         public String title = "";
@@ -47,7 +59,43 @@ public class MediaListenerService extends NotificationListenerService {
     }
 
     public static boolean hasController() {
-        return activeController != null;
+        return activeController != null && controllerUsable;
+    }
+
+    public static boolean hasNotifActions() {
+        return !notifActions.isEmpty();
+    }
+
+    /** Texto para la pantalla de diagnóstico. */
+    public static String describeNotifications() {
+        MediaListenerService svc = instance;
+        if (svc == null) return "  (servicio no conectado)\n";
+        StringBuilder sb = new StringBuilder();
+        try {
+            StatusBarNotification[] arr = svc.getActiveNotifications();
+            int n = 0;
+            if (arr != null) {
+                for (StatusBarNotification sbn : arr) {
+                    Notification nt = sbn.getNotification();
+                    boolean media = Notification.CATEGORY_TRANSPORT.equals(nt.category)
+                            || nt.extras.containsKey("android.mediaSession");
+                    if (!media) continue;
+                    n++;
+                    sb.append("  • ").append(sbn.getPackageName())
+                            .append(" | título=").append(nt.extras.getCharSequence(Notification.EXTRA_TITLE))
+                            .append(" | texto=").append(nt.extras.getCharSequence(Notification.EXTRA_TEXT))
+                            .append(" | botones=");
+                    if (nt.actions != null) {
+                        for (Notification.Action a : nt.actions) sb.append("[").append(a.title).append("]");
+                    }
+                    sb.append("\n");
+                }
+            }
+            if (n == 0) sb.append("  (ninguna)\n");
+        } catch (Exception e) {
+            sb.append("  error: ").append(e).append("\n");
+        }
+        return sb.toString();
     }
 
     private MediaSessionManager sessionManager;
@@ -76,6 +124,7 @@ public class MediaListenerService extends NotificationListenerService {
     @Override
     public void onListenerConnected() {
         super.onListenerConnected();
+        instance = this;
         sessionManager = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
         component = new ComponentName(this, MediaListenerService.class);
         try {
@@ -87,6 +136,7 @@ public class MediaListenerService extends NotificationListenerService {
 
     @Override
     public void onListenerDisconnected() {
+        instance = null;
         try {
             if (sessionManager != null) {
                 sessionManager.removeOnActiveSessionsChangedListener(sessionsListener);
@@ -120,23 +170,41 @@ public class MediaListenerService extends NotificationListenerService {
         }
     }
 
-    /** Prefiere la sesión que está sonando; si no hay, la primera. */
+    private static boolean hasTitle(MediaController c) {
+        MediaMetadata m = c.getMetadata();
+        if (m == null) return false;
+        String t = m.getString(MediaMetadata.METADATA_KEY_TITLE);
+        if (t == null || t.isEmpty()) t = m.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+        return t != null && !t.isEmpty();
+    }
+
+    private static boolean isPlaying(MediaController c) {
+        PlaybackState st = c.getPlaybackState();
+        return st != null && st.getState() == PlaybackState.STATE_PLAYING;
+    }
+
+    /** Prefiere: sonando con título > con título > sonando > la primera. */
     private void selectController(List<MediaController> controllers) {
-        if (controllers == null || controllers.isEmpty()) {
+        MediaController chosen = null;
+        if (controllers != null && !controllers.isEmpty()) {
+            chosen = controllers.get(0);
+            int best = -1;
+            for (MediaController c : controllers) {
+                int score = (hasTitle(c) ? 2 : 0) + (isPlaying(c) ? 1 : 0);
+                if (score > best) {
+                    best = score;
+                    chosen = c;
+                }
+            }
+        }
+        if (chosen == null) {
             if (activeController != null) {
                 activeController.unregisterCallback(controllerCallback);
                 activeController = null;
             }
-            nowPlaying.postValue(null);
+            controllerUsable = false;
+            publish(null);
             return;
-        }
-        MediaController chosen = controllers.get(0);
-        for (MediaController c : controllers) {
-            PlaybackState st = c.getPlaybackState();
-            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) {
-                chosen = c;
-                break;
-            }
         }
         if (activeController == null
                 || !activeController.getSessionToken().equals(chosen.getSessionToken())) {
@@ -147,6 +215,43 @@ public class MediaListenerService extends NotificationListenerService {
             activeController.registerCallback(controllerCallback);
         }
         publish(activeController);
+    }
+
+    /** Info sacada de la notificación multimedia (si existe). */
+    private NowPlayingInfo fromNotifications() {
+        notifActions = new ArrayList<>();
+        try {
+            StatusBarNotification[] arr = getActiveNotifications();
+            if (arr == null) return null;
+            for (StatusBarNotification sbn : arr) {
+                if (getPackageName().equals(sbn.getPackageName())) continue;
+                Notification n = sbn.getNotification();
+                boolean media = Notification.CATEGORY_TRANSPORT.equals(n.category)
+                        || n.extras.containsKey("android.mediaSession");
+                if (!media) continue;
+                CharSequence title = n.extras.getCharSequence(Notification.EXTRA_TITLE);
+                CharSequence text = n.extras.getCharSequence(Notification.EXTRA_TEXT);
+                NowPlayingInfo info = new NowPlayingInfo();
+                info.title = title == null ? "" : title.toString();
+                info.artist = text == null ? "" : text.toString();
+                info.source = appLabel(sbn.getPackageName());
+                info.updateTime = SystemClock.elapsedRealtime();
+                try {
+                    Icon li = n.getLargeIcon();
+                    if (li != null) {
+                        Drawable d = li.loadDrawable(this);
+                        if (d instanceof BitmapDrawable) info.albumArt = ((BitmapDrawable) d).getBitmap();
+                    }
+                } catch (Exception ignored) {
+                }
+                if (n.actions != null) {
+                    for (Notification.Action a : n.actions) notifActions.add(a);
+                }
+                return info;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private static String firstNonEmpty(MediaMetadata m, String... keys) {
@@ -167,28 +272,32 @@ public class MediaListenerService extends NotificationListenerService {
     }
 
     private void publish(MediaController controller) {
+        NowPlayingInfo fromNotif = null;
+        boolean usable = controller != null && hasTitle(controller);
+        controllerUsable = usable;
+        if (!usable) fromNotif = fromNotifications();
+        else notifActions = new ArrayList<>();
+
         if (controller == null) {
-            nowPlaying.postValue(null);
+            nowPlaying.postValue(fromNotif);
             return;
         }
         MediaMetadata metadata = controller.getMetadata();
         PlaybackState state = controller.getPlaybackState();
-        if (metadata == null) {
-            nowPlaying.postValue(null);
-            return;
-        }
         NowPlayingInfo info = new NowPlayingInfo();
-        info.title = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_TITLE,
-                MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
-        info.artist = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ARTIST,
-                MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
-                MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
-        info.album = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ALBUM);
+        if (metadata != null) {
+            info.title = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_TITLE,
+                    MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+            info.artist = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ARTIST,
+                    MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
+                    MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
+            info.album = firstNonEmpty(metadata, MediaMetadata.METADATA_KEY_ALBUM);
+            info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+            info.duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
+        }
         info.source = appLabel(controller.getPackageName());
-        info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
-        if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_ART);
-        if (info.albumArt == null) info.albumArt = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
-        info.duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
         if (state != null) {
             info.isPlaying = state.getState() == PlaybackState.STATE_PLAYING;
             info.position = Math.max(0, state.getPosition());
@@ -198,25 +307,63 @@ public class MediaListenerService extends NotificationListenerService {
         } else {
             info.updateTime = SystemClock.elapsedRealtime();
         }
+        if (!usable && fromNotif != null) {
+            // La sesión no trae datos: usamos los de la notificación
+            fromNotif.isPlaying = info.isPlaying;
+            fromNotif.position = info.position;
+            fromNotif.updateTime = info.updateTime;
+            fromNotif.speed = info.speed;
+            info = fromNotif;
+        }
         nowPlaying.postValue(info);
     }
 
-    public static void togglePlayPause() {
-        if (activeController == null) return;
-        PlaybackState state = activeController.getPlaybackState();
-        boolean playing = state != null && state.getState() == PlaybackState.STATE_PLAYING;
-        if (playing) {
-            activeController.getTransportControls().pause();
-        } else {
-            activeController.getTransportControls().play();
+    // ---- controles --------------------------------------------------------
+
+    private static boolean pressNotifAction(String... keywords) {
+        for (Notification.Action a : notifActions) {
+            String t = a.title == null ? "" : a.title.toString().toLowerCase(Locale.ROOT);
+            for (String k : keywords) {
+                if (t.contains(k) && a.actionIntent != null) {
+                    try {
+                        a.actionIntent.send();
+                        return true;
+                    } catch (PendingIntent.CanceledException ignored) {
+                    }
+                }
+            }
         }
+        return false;
     }
 
-    public static void skipToNext() {
-        if (activeController != null) activeController.getTransportControls().skipToNext();
+    /** @return true si la orden pudo enviarse; si es false, usar tecla multimedia. */
+    public static boolean togglePlayPause() {
+        if (hasController()) {
+            PlaybackState state = activeController.getPlaybackState();
+            boolean playing = state != null && state.getState() == PlaybackState.STATE_PLAYING;
+            if (playing) {
+                activeController.getTransportControls().pause();
+            } else {
+                activeController.getTransportControls().play();
+            }
+            return true;
+        }
+        return pressNotifAction("pause", "pausa", "play", "reprod");
     }
 
-    public static void skipToPrevious() {
-        if (activeController != null) activeController.getTransportControls().skipToPrevious();
+    public static boolean skipToNext() {
+        if (hasController()) {
+            activeController.getTransportControls().skipToNext();
+            return true;
+        }
+        return pressNotifAction("next", "siguiente", "sig");
+    }
+
+    public static boolean skipToPrevious() {
+        if (hasController()) {
+            activeController.getTransportControls().skipToPrevious();
+            return true;
+        }
+        return pressNotifAction("prev", "anterior", "atrás", "atras");
     }
 }

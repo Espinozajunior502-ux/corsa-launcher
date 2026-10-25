@@ -95,6 +95,7 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar musicProgress;
     private View weatherPill, drawerOverlay, diagOverlay;
     private GridView appGrid;
+    private CarView carView;
     private TextView diagText;
 
     private LocationManager locationManager;
@@ -159,7 +160,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             lastBroadcast = String.valueOf(intent.getAction());
-            if (MediaListenerService.hasController()) return; // la sesión real manda
+            if (MediaListenerService.hasController() || MediaListenerService.hasNotifActions()) return; // la sesión real manda
             String title = firstExtra(intent, "track", "title", "song", "songname");
             if (title == null || title.isEmpty()) return;
             MediaListenerService.NowPlayingInfo info = new MediaListenerService.NowPlayingInfo();
@@ -233,6 +234,7 @@ public class MainActivity extends AppCompatActivity {
         diagOverlay = findViewById(R.id.diagOverlay);
         diagText = findViewById(R.id.diagText);
         appGrid = findViewById(R.id.appGrid);
+        carView = findViewById(R.id.carImage);
 
         setupDock();
         setupDrawer();
@@ -344,25 +346,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupMusic() {
         btnPlayPause.setOnClickListener(v -> {
-            if (MediaListenerService.hasController()) {
-                MediaListenerService.togglePlayPause();
-            } else {
-                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
-            }
+            if (!MediaListenerService.togglePlayPause()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
         });
         btnPrev.setOnClickListener(v -> {
-            if (MediaListenerService.hasController()) {
-                MediaListenerService.skipToPrevious();
-            } else {
-                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
-            }
+            if (!MediaListenerService.skipToPrevious()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
         });
         btnNext.setOnClickListener(v -> {
-            if (MediaListenerService.hasController()) {
-                MediaListenerService.skipToNext();
-            } else {
-                sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT);
-            }
+            if (!MediaListenerService.skipToNext()) sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT);
         });
 
         findViewById(R.id.musicCard).setOnClickListener(v -> {
@@ -681,6 +671,7 @@ public class MainActivity extends AppCompatActivity {
         float kmh = location.hasSpeed() ? location.getSpeed() * 3.6f : 0f;
         if (kmh < 3f) kmh = 0f; // filtra el ruido del GPS parado
         speedValue.setText(String.format(Locale.getDefault(), "%.0f", kmh));
+        carView.setSpeed(kmh);
     }
 
     private void maybeFetchWeather(Location loc) {
@@ -766,6 +757,7 @@ public class MainActivity extends AppCompatActivity {
             sb.append("  error: ").append(e).append("\n");
         }
 
+        sb.append("\nNotificaciones multimedia:\n").append(MediaListenerService.describeNotifications());
         sb.append("\nApps relacionadas con música/Bluetooth/cámara:\n");
         loadApps();
         for (AppEntry e : apps) {
