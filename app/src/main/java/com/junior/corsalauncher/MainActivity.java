@@ -144,11 +144,6 @@ public class MainActivity extends AppCompatActivity {
     private View dimOverlay, speedPill;
     private TextView tripText, volText;
     private VolumeSlider volSlider;
-    private TwCommand tw;
-    private int volMax = 30;
-    private int volLevel = -1;
-    private long lastVolSentAt = 0;
-    private int lastVolSent = -1;
     private long volTouchedAt = 0;
     private boolean driving = false;
     private long slowSince = 0;
@@ -426,7 +421,6 @@ public class MainActivity extends AppCompatActivity {
         progressTick.run();
         refreshNotificationAccess();
         KeepAliveService.start(this);
-        if (tw != null) tw.connect();
         askUsageAccessOnce();
         setupGps();
         setupBluetoothProxies();
@@ -474,7 +468,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (tw != null) tw.disconnect();
         try {
             unregisterReceiver(btReceiver);
         } catch (Exception ignored) {
@@ -530,6 +523,10 @@ public class MainActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == 101 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             copyApks();
+            return;
+        }
+        if (requestCode == 102) {
+            generateReport();
             return;
         }
         setupGps();
@@ -1107,68 +1104,83 @@ public class MainActivity extends AppCompatActivity {
             return true;
         });
 
-        // Volumen: barra vertical (control real de la radio, con respaldo de Android)
-        tw = new TwCommand(this, new TwCommand.Listener() {
-            @Override
-            public void onVolume(int level) {
-                if (level < 0 || level > 100) return;
-                volLevel = level;
-                if (level > volMax) volMax = level;
-                if (!volSlider.isDragging() && System.currentTimeMillis() - volTouchedAt > 1200) {
-                    volSlider.setLevel(level / (float) volMax);
-                    volText.setText(String.valueOf(level));
-                }
-            }
-
-            @Override
-            public void onConnected(boolean ok) {
-                if (!ok) updateVolume();
-            }
-        });
+        // Volumen: barra vertical. Manda las mismas ordenes que los botones fisicos
+        // (broadcast del asistente de voz de la radio) hasta llegar al nivel pedido.
         volSlider.setOnChange((frac, finished) -> {
             volTouchedAt = System.currentTimeMillis();
-            int v = Math.round(frac * volMax);
-            volText.setText(String.valueOf(v));
-            long now = System.currentTimeMillis();
-            if (finished || (v != lastVolSent && now - lastVolSentAt > 70)) {
-                lastVolSent = v;
-                lastVolSentAt = now;
-                setVolumeLevel(v, frac);
-            }
+            int mx = volStreamMax();
+            volTargetStream = Math.round(frac * mx);
+            volText.setText(String.valueOf(Math.round(frac * 30)));
+            volNoProgress = 0;
+            mainHandler.removeCallbacks(volDriver);
+            mainHandler.post(volDriver);
         });
         findViewById(R.id.btnEq).setOnClickListener(v -> openEqualizer());
-        tw.connect();
         updateVolume();
     }
 
-    private void setVolumeLevel(int v, float frac) {
-        if (tw != null && tw.isConnected() && tw.volumeValue(v)) return;
-        try { // respaldo: volumen de Android
-            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-            am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(frac * max), 0);
-        } catch (Exception ignored) {
-        }
-    }
+    private static final int VOL_STREAM = 5; // en esta radio refleja el volumen real del MCU
+    private int volTargetStream = -1, volNoProgress = 0, volLastSeen = -1;
 
-    private void updateVolume() {
-        if (tw != null && tw.isConnected()) {
-            tw.getVolume(); // pide el nivel real (también cuando usas los botones físicos)
-            return;
+    private final Runnable volDriver = new Runnable() {
+        @Override
+        public void run() {
+            if (volTargetStream < 0) return;
+            int cur = volStreamNow();
+            if (cur == volTargetStream) { volTargetStream = -1; return; }
+            if (cur == volLastSeen) volNoProgress++; else volNoProgress = 0;
+            volLastSeen = cur;
+            if (volNoProgress > 12) { volTargetStream = -1; return; }
+            Intent i = new Intent("com.unisound.unicar.broadcast.action");
+            i.putExtra("type", cur < volTargetStream ? "volumeup" : "volumedown");
+            try { sendBroadcast(i); } catch (Exception ignored) { }
+            mainHandler.postDelayed(this, 130);
         }
-        if (volSlider.isDragging() || System.currentTimeMillis() - volTouchedAt < 1200) return;
-        if (tw != null) return; // sin servicio de la radio: la barra no se reescribe sola
+    };
+
+    private int volStreamMax() {
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-            int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-            volSlider.setLevel(cur / (float) max);
-            volText.setText(String.valueOf(cur));
-        } catch (Exception ignored) {
-        }
+            return Math.max(1, am.getStreamMaxVolume(VOL_STREAM));
+        } catch (Exception e) { return 30; }
+    }
+
+    private int volStreamNow() {
+        try {
+            return ((AudioManager) getSystemService(Context.AUDIO_SERVICE)).getStreamVolume(VOL_STREAM);
+        } catch (Exception e) { return 0; }
+    }
+
+    /** Sigue los botones fisicos: lee el nivel real cada segundo. */
+    private void updateVolume() {
+        if (volSlider.isDragging() || volTargetStream >= 0
+                || System.currentTimeMillis() - volTouchedAt < 1500) return;
+        int mx = volStreamMax();
+        int cur = volStreamNow();
+        volSlider.setLevel(cur / (float) mx);
+        volText.setText(String.valueOf(Math.round(cur * 30f / mx)));
+    }
+
+    private String volStreamsInfo() {
+        StringBuilder sb = new StringBuilder("Volumenes Android (flujo valor/max): ");
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            for (int st = 0; st <= 5; st++)
+                sb.append(st).append("=").append(am.getStreamVolume(st)).append("/")
+                        .append(am.getStreamMaxVolume(st)).append("  ");
+        } catch (Exception e) { sb.append(e); }
+        return sb.toString();
     }
 
     private void openEqualizer() {
+        try {
+            Intent eq = new Intent();
+            eq.setClassName("com.tw.eq", "com.tw.eq.EQActivity");
+            eq.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(eq);
+            return;
+        } catch (Exception ignored) {
+        }
         try {
             Intent eq = new Intent("android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL");
             eq.putExtra("android.media.extra.AUDIO_SESSION", 0);
@@ -1388,7 +1400,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Informe completo del equipo: se guarda en Descargas y se resume en pantalla. */
+    private boolean reportAsked = false;
+
     private void generateReport() {
+        if (!has(Manifest.permission.WRITE_EXTERNAL_STORAGE) && !reportAsked) {
+            reportAsked = true;
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 102);
+            return;
+        }
         diagText.setText("Generando informe…");
         Executors.newSingleThreadExecutor().execute(() -> {
             final RadioReport rep = RadioReport.build(this);
@@ -1455,11 +1475,7 @@ public class MainActivity extends AppCompatActivity {
         sb.append("Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
         sb.append("Equipo: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n\n");
         sb.append("Acceso a notificaciones: ").append(notifAccess ? "SÍ" : "NO").append("\n");
-        sb.append("Volumen radio: ").append(tw != null && tw.isConnected() ? "conectado" : "NO conectado")
-                .append(" | nivel ").append(tw == null ? -1 : tw.lastSystemVolume)
-                .append(" | estado ").append(tw == null ? -1 : tw.lastVolumeStatus)
-                .append(" | máx usado ").append(volMax).append("\n")
-                .append(tw == null ? "" : tw.dumpLog());
+        sb.append(volStreamsInfo()).append("\n");
         sb.append("Acceso de uso (anti launcher de fábrica): ").append(KeepAliveService.hasUsageAccess(this) ? "SÍ" : "NO").append("\n");
         sb.append("Sesión de música activa en la app: ").append(MediaListenerService.hasController() ? "SÍ" : "NO").append("\n");
         sb.append("Último aviso de música recibido: ").append(lastBroadcast).append("\n");
