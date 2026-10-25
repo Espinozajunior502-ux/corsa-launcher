@@ -143,7 +143,6 @@ public class MainActivity extends AppCompatActivity {
     // ---- modo conducción, velocidad, volumen ----
     private View dimOverlay, speedPill;
     private TextView tripText, volText;
-    private VolumeSlider volSlider;
     private long volTouchedAt = 0;
     private boolean driving = false;
     private long slowSince = 0;
@@ -389,7 +388,6 @@ public class MainActivity extends AppCompatActivity {
         speedPill = findViewById(R.id.speedPill);
         tripText = findViewById(R.id.tripText);
         volText = findViewById(R.id.volText);
-        volSlider = findViewById(R.id.volSlider);
         prefs = getSharedPreferences("corsa", MODE_PRIVATE);
         tripKm = prefs.getFloat("tripKm", 0f);
         alertLimit = prefs.getInt("alertLimit", 0);
@@ -1104,62 +1102,48 @@ public class MainActivity extends AppCompatActivity {
             return true;
         });
 
-        // Volumen: barra vertical. Manda las mismas ordenes que los botones fisicos
-        // (broadcast del asistente de voz de la radio) hasta llegar al nivel pedido.
-        volSlider.setOnChange((frac, finished) -> {
-            volTouchedAt = System.currentTimeMillis();
-            int t = Math.round(frac * 30);
-            volText.setText(String.valueOf(t));
-            if (!finished) return; // se aplica al soltar: evita mandar docenas de ordenes mientras arrastras
-            mainHandler.removeCallbacks(volDriver);
-            mainHandler.removeCallbacks(volVerify);
-            volTarget30 = t;
-            volRounds = 0;
-            volPending = t - volNow30();
-            mainHandler.post(volDriver);
-        });
+        // Volumen: botones + / - (una orden por toque; al mantener repite)
+        setupVolButton(R.id.btnVolUp, "volumeup");
+        setupVolButton(R.id.btnVolDown, "volumedown");
         findViewById(R.id.btnEq).setOnClickListener(v -> openEqualizer());
         updateVolume();
     }
 
     private static final int VOL_STREAM = 5; // en esta radio refleja el volumen real del MCU
-    private int volTarget30 = -1;      // objetivo en escala 0..30
-    private int volPending = 0;        // pasos que faltan por mandar (+ sube, - baja)
-    private int volRounds = 0;
 
-    /** Nivel real en escala 0..30. */
+    private void sendVol(String type) {
+        Intent i = new Intent("com.unisound.unicar.broadcast.action");
+        i.putExtra("type", type);
+        try { sendBroadcast(i); } catch (Exception ignored) { }
+        volTouchedAt = System.currentTimeMillis();
+        mainHandler.postDelayed(this::updateVolume, 350);
+    }
+
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private void setupVolButton(int id, String type) {
+        View b = findViewById(id);
+        final Runnable[] rep = new Runnable[1];
+        rep[0] = () -> { sendVol(type); mainHandler.postDelayed(rep[0], 220); };
+        b.setOnTouchListener((v, e) -> {
+            switch (e.getAction()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    v.setPressed(true);
+                    sendVol(type);
+                    mainHandler.postDelayed(rep[0], 450);
+                    return true;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    v.setPressed(false);
+                    mainHandler.removeCallbacks(rep[0]);
+                    return true;
+            }
+            return true;
+        });
+    }
+
     private int volNow30() {
         return Math.round(volStreamNow() * 30f / volStreamMax());
     }
-
-    // Manda UN paso cada 160 ms (sin depender de la lectura, que llega con retraso);
-    // al terminar espera, vuelve a leer y corrige como maximo 3 veces.
-    private final Runnable volDriver = new Runnable() {
-        @Override
-        public void run() {
-            if (volTarget30 < 0) return;
-            if (volPending == 0) {
-                mainHandler.postDelayed(volVerify, 700);
-                return;
-            }
-            Intent i = new Intent("com.unisound.unicar.broadcast.action");
-            i.putExtra("type", volPending > 0 ? "volumeup" : "volumedown");
-            try { sendBroadcast(i); } catch (Exception ignored) { }
-            volPending += volPending > 0 ? -1 : 1;
-            mainHandler.postDelayed(this, 160);
-        }
-    };
-
-    private final Runnable volVerify = new Runnable() {
-        @Override
-        public void run() {
-            if (volTarget30 < 0) return;
-            int diff = volTarget30 - volNow30();
-            if (diff == 0 || ++volRounds > 3) { volTarget30 = -1; return; }
-            volPending = diff;
-            mainHandler.post(volDriver);
-        }
-    };
 
     private int volStreamMax() {
         try {
@@ -1174,13 +1158,9 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) { return 0; }
     }
 
-    /** Sigue los botones fisicos: lee el nivel real cada segundo. */
+    /** Muestra el nivel real (sigue tambien a los botones fisicos). */
     private void updateVolume() {
-        if (volSlider.isDragging() || volTarget30 >= 0
-                || System.currentTimeMillis() - volTouchedAt < 1500) return;
-        int cur = volNow30();
-        volSlider.setLevel(cur / 30f);
-        volText.setText(String.valueOf(cur));
+        volText.setText(String.valueOf(volNow30()));
     }
 
     private String volStreamsInfo() {

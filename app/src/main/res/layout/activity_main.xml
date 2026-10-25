@@ -329,11 +329,18 @@
                 android:orientation="vertical"
                 android:gravity="center_horizontal">
 
-                <com.junior.corsalauncher.VolumeSlider
-                    android:id="@+id/volSlider"
+                <TextView
+                    android:id="@+id/btnVolUp"
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
-                    android:layout_weight="1" />
+                    android:layout_weight="1"
+                    android:layout_marginBottom="6dp"
+                    android:gravity="center"
+                    android:text="+"
+                    android:textColor="@color/accent"
+                    android:textSize="40sp"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_pill" />
 
                 <TextView
                     android:id="@+id/volText"
@@ -343,6 +350,19 @@
                     android:textColor="@color/text_primary"
                     android:textSize="22sp"
                     android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnVolDown"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="−"
+                    android:textColor="@color/accent"
+                    android:textSize="40sp"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_pill" />
 
                 <TextView
                     android:id="@+id/btnEq"
