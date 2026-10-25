@@ -51,6 +51,13 @@ import androidx.core.content.ContextCompat;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -447,6 +454,10 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 101 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            copyApks();
+            return;
+        }
         setupGps();
         setupBluetoothProxies();
         updateBluetoothStatus();
@@ -985,6 +996,96 @@ public class MainActivity extends AppCompatActivity {
         });
         findViewById(R.id.btnCloseDiag).setOnClickListener(v -> diagOverlay.setVisibility(View.GONE));
         findViewById(R.id.btnRefreshDiag).setOnClickListener(v -> diagText.setText(buildDiagnostics()));
+        findViewById(R.id.btnAnalyze).setOnClickListener(v -> analyzeBtApp());
+        findViewById(R.id.btnCopyApk).setOnClickListener(v -> {
+            if (has(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                copyApks();
+            } else {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 101);
+            }
+        });
+    }
+
+    /** Busca textos reveladores dentro de la app Bluetooth de fábrica. */
+    private void analyzeBtApp() {
+        diagText.setText("Analizando com.tw.bt ...");
+        Executors.newSingleThreadExecutor().execute(() -> {
+            StringBuilder sb = new StringBuilder();
+            try {
+                Class.forName("android.tw.john.TWUtil");
+                sb.append("Clase TWUtil: SÍ existe en el sistema\n");
+            } catch (Throwable t) {
+                sb.append("Clase TWUtil: no\n");
+            }
+            java.util.regex.Pattern pat = java.util.regex.Pattern.compile(
+                    "(?i)(id3|artist|song|metadata|avrcp|twutil|android\\.tw|\\.action\\.|broadcast|trackname|bt_music|musicinfo|a2dp)");
+            for (String pkg : new String[]{"com.tw.bt"}) {
+                try {
+                    String src = getPackageManager().getApplicationInfo(pkg, 0).sourceDir;
+                    sb.append("\n").append(pkg).append(" -> ").append(src).append("\n");
+                    ZipFile z = new ZipFile(src);
+                    Set<String> found = new LinkedHashSet<>();
+                    java.util.Enumeration<? extends ZipEntry> en = z.entries();
+                    while (en.hasMoreElements()) {
+                        ZipEntry e = en.nextElement();
+                        if (!e.getName().endsWith(".dex")) continue;
+                        InputStream in = z.getInputStream(e);
+                        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                        in.close();
+                        byte[] b = bo.toByteArray();
+                        StringBuilder cur = new StringBuilder();
+                        for (byte x : b) {
+                            int c = x & 0xff;
+                            if (c >= 32 && c < 127) {
+                                cur.append((char) c);
+                            } else {
+                                if (cur.length() >= 6) {
+                                    String t = cur.toString();
+                                    if (pat.matcher(t).find() && !t.startsWith("Landroid/") && !t.startsWith("Ljava/")) {
+                                        found.add(t.length() > 80 ? t.substring(0, 80) : t);
+                                    }
+                                }
+                                cur.setLength(0);
+                            }
+                            if (found.size() >= 90) break;
+                        }
+                    }
+                    z.close();
+                    for (String f : found) sb.append("  ").append(f).append("\n");
+                    if (found.isEmpty()) sb.append("  (nada relevante)\n");
+                } catch (Exception ex) {
+                    sb.append("  error: ").append(ex).append("\n");
+                }
+            }
+            final String out = sb.toString();
+            mainHandler.post(() -> diagText.setText(out));
+        });
+    }
+
+    /** Copia los APK del radio a Descargas para poder revisarlos. */
+    private void copyApks() {
+        StringBuilder sb = new StringBuilder();
+        File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+        dir.mkdirs();
+        for (String pkg : new String[]{"com.tw.bt", "com.tw.media"}) {
+            try {
+                String src = getPackageManager().getApplicationInfo(pkg, 0).sourceDir;
+                File dst = new File(dir, pkg + ".apk");
+                try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(dst)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                sb.append("Copiado: ").append(dst.getAbsolutePath()).append(" (").append(dst.length() / 1024).append(" KB)\n");
+            } catch (Exception e) {
+                sb.append("Error con ").append(pkg).append(": ").append(e).append("\n");
+            }
+        }
+        diagText.setText(sb.toString());
     }
 
     private String buildDiagnostics() {

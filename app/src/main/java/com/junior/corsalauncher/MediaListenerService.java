@@ -15,6 +15,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Bundle;
 import android.os.SystemClock;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
@@ -61,9 +62,31 @@ public class MediaListenerService extends NotificationListenerService {
         String action = String.valueOf(intent.getAction());
         StringBuilder log = new StringBuilder(String.format(java.util.Locale.US, "%tT ", Calendar.getInstance()));
         log.append(action.replace("android.bluetooth.", "").replace(".profile.action.", ":"));
-        if (intent.getExtras() != null) log.append(" ").append(intent.getExtras().keySet());
+        Bundle exs = intent.getExtras();
+        if (exs != null) {
+            for (String k : new ArrayList<>(exs.keySet())) {
+                Object v = exs.get(k);
+                String kk = k.substring(k.lastIndexOf('.') + 1);
+                log.append("\n     ").append(kk).append("=");
+                if (v instanceof MediaMetadata) {
+                    MediaMetadata md = (MediaMetadata) v;
+                    log.append("META{");
+                    for (String mk : md.keySet()) {
+                        String sv = md.getString(mk);
+                        String lv = sv != null ? sv : String.valueOf(md.getLong(mk));
+                        if (lv.length() > 30) lv = lv.substring(0, 30);
+                        log.append(mk.substring(mk.lastIndexOf('.') + 1)).append(':').append(lv).append(' ');
+                    }
+                    log.append("}");
+                } else {
+                    String sv = String.valueOf(v);
+                    if (sv.length() > 60) sv = sv.substring(0, 60);
+                    log.append(v == null ? "null" : v.getClass().getSimpleName() + " " + sv);
+                }
+            }
+        }
         avrcpLog.add(log.toString());
-        while (avrcpLog.size() > 15) avrcpLog.remove(0);
+        while (avrcpLog.size() > 6) avrcpLog.remove(0);
 
         NowPlayingInfo info = new NowPlayingInfo();
         if (avrcpState != null) {
@@ -81,25 +104,46 @@ public class MediaListenerService extends NotificationListenerService {
         info.source = "Bluetooth";
         try {
             if (ACTION_AVRCP_TRACK.equals(action)) {
-                Object m = intent.getParcelableExtra(EXTRA_AVRCP_META);
-                if (m instanceof MediaMetadata) {
-                    MediaMetadata md = (MediaMetadata) m;
-                    String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
-                    String ar = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
-                    String al = md.getString(MediaMetadata.METADATA_KEY_ALBUM);
-                    if (t != null) info.title = t;
-                    if (ar != null) info.artist = ar;
-                    if (al != null) info.album = al;
-                    long d = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
-                    if (d > 0) info.duration = d;
-                }
-                Object ps = intent.getParcelableExtra(EXTRA_AVRCP_PLAY);
-                if (ps instanceof PlaybackState) {
-                    PlaybackState st = (PlaybackState) ps;
-                    info.isPlaying = st.getState() == PlaybackState.STATE_PLAYING;
-                    info.position = Math.max(0, st.getPosition());
-                    info.updateTime = SystemClock.elapsedRealtime();
-                    info.speed = st.getPlaybackSpeed();
+                Bundle ex = intent.getExtras();
+                if (ex != null) {
+                    for (String k : new ArrayList<>(ex.keySet())) {
+                        Object v = ex.get(k);
+                        if (v instanceof MediaMetadata) {
+                            MediaMetadata md = (MediaMetadata) v;
+                            String t = pick(md, MediaMetadata.METADATA_KEY_TITLE,
+                                    MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+                            String ar = pick(md, MediaMetadata.METADATA_KEY_ARTIST,
+                                    MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
+                                    MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE,
+                                    MediaMetadata.METADATA_KEY_WRITER);
+                            String al = pick(md, MediaMetadata.METADATA_KEY_ALBUM);
+                            if (t == null) { // último recurso: primer texto no vacío
+                                for (String mk : md.keySet()) {
+                                    String sv = md.getString(mk);
+                                    if (sv != null && !sv.isEmpty() && !mk.contains("ART_URI")) {
+                                        t = sv;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (t != null) info.title = t;
+                            if (ar != null) info.artist = ar;
+                            if (al != null) info.album = al;
+                            long d = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                            if (d > 0) info.duration = d;
+                        } else if (v instanceof PlaybackState) {
+                            PlaybackState st = (PlaybackState) v;
+                            info.isPlaying = st.getState() == PlaybackState.STATE_PLAYING;
+                            info.position = Math.max(0, st.getPosition());
+                            info.updateTime = SystemClock.elapsedRealtime();
+                            info.speed = st.getPlaybackSpeed();
+                        } else if (v instanceof String && !((String) v).isEmpty()) {
+                            String kl = k.toLowerCase(java.util.Locale.ROOT);
+                            if (kl.contains("title") || kl.contains("track") || kl.contains("song")) info.title = (String) v;
+                            else if (kl.contains("artist")) info.artist = (String) v;
+                            else if (kl.contains("album")) info.album = (String) v;
+                        }
+                    }
                 }
             } else if (action.contains("PLAYING_STATE_CHANGED")) {
                 int st = intent.getIntExtra("android.bluetooth.profile.extra.STATE", -1);
@@ -114,6 +158,14 @@ public class MediaListenerService extends NotificationListenerService {
         }
         avrcpState = info;
         avrcpNow.setValue(info);
+    }
+
+    private static String pick(MediaMetadata md, String... keys) {
+        for (String k : keys) {
+            String v = md.getString(k);
+            if (v != null && !v.trim().isEmpty()) return v;
+        }
+        return null;
     }
 
     private final BroadcastReceiver avrcpReceiver = new BroadcastReceiver() {

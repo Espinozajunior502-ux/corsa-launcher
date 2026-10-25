@@ -569,6 +569,24 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/btnAnalyze"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="Analizar BT"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/btnCopyApk"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="Copiar APK"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
                 android:id="@+id/btnRefreshDiag"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
