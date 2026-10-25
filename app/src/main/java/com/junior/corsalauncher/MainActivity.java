@@ -143,7 +143,13 @@ public class MainActivity extends AppCompatActivity {
     // ---- modo conducción, velocidad, volumen ----
     private View dimOverlay, speedPill;
     private TextView tripText, volText;
-    private ProgressBar volBar;
+    private VolumeSlider volSlider;
+    private TwCommand tw;
+    private int volMax = 40;
+    private int volLevel = -1;
+    private long lastVolSentAt = 0;
+    private int lastVolSent = -1;
+    private long volTouchedAt = 0;
     private boolean driving = false;
     private long slowSince = 0;
     private float tripKm = 0f;
@@ -378,7 +384,7 @@ public class MainActivity extends AppCompatActivity {
         speedPill = findViewById(R.id.speedPill);
         tripText = findViewById(R.id.tripText);
         volText = findViewById(R.id.volText);
-        volBar = findViewById(R.id.volBar);
+        volSlider = findViewById(R.id.volSlider);
         prefs = getSharedPreferences("corsa", MODE_PRIVATE);
         tripKm = prefs.getFloat("tripKm", 0f);
         alertLimit = prefs.getInt("alertLimit", 0);
@@ -410,6 +416,7 @@ public class MainActivity extends AppCompatActivity {
         progressTick.run();
         refreshNotificationAccess();
         KeepAliveService.start(this);
+        if (tw != null) tw.connect();
         askUsageAccessOnce();
         setupGps();
         setupBluetoothProxies();
@@ -457,6 +464,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (tw != null) tw.disconnect();
         try {
             unregisterReceiver(btReceiver);
         } catch (Exception ignored) {
@@ -1089,52 +1097,61 @@ public class MainActivity extends AppCompatActivity {
             return true;
         });
 
-        // Volumen con repetición al mantener presionado
-        bindVolumeButton(findViewById(R.id.btnVolDown), AudioManager.ADJUST_LOWER);
-        bindVolumeButton(findViewById(R.id.btnVolUp), AudioManager.ADJUST_RAISE);
+        // Volumen: barra vertical (control real de la radio, con respaldo de Android)
+        tw = new TwCommand(this, new TwCommand.Listener() {
+            @Override
+            public void onVolume(int level) {
+                if (level < 0 || level > 100) return;
+                volLevel = level;
+                if (level > volMax) volMax = level;
+                if (!volSlider.isDragging() && System.currentTimeMillis() - volTouchedAt > 1200) {
+                    volSlider.setLevel(level / (float) volMax);
+                    volText.setText(String.valueOf(level));
+                }
+            }
+
+            @Override
+            public void onConnected(boolean ok) {
+                if (!ok) updateVolume();
+            }
+        });
+        volSlider.setOnChange((frac, finished) -> {
+            volTouchedAt = System.currentTimeMillis();
+            int v = Math.round(frac * volMax);
+            volText.setText(String.valueOf(v));
+            long now = System.currentTimeMillis();
+            if (finished || (v != lastVolSent && now - lastVolSentAt > 70)) {
+                lastVolSent = v;
+                lastVolSentAt = now;
+                setVolumeLevel(v, frac);
+            }
+        });
         findViewById(R.id.btnEq).setOnClickListener(v -> openEqualizer());
+        tw.connect();
         updateVolume();
     }
 
-    private void bindVolumeButton(View b, final int dir) {
-        final Runnable[] rep = new Runnable[1];
-        rep[0] = () -> {
-            changeVolume(dir);
-            mainHandler.postDelayed(rep[0], 160);
-        };
-        b.setOnTouchListener((v, e) -> {
-            switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    v.setPressed(true);
-                    changeVolume(dir);
-                    mainHandler.postDelayed(rep[0], 450);
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    v.setPressed(false);
-                    mainHandler.removeCallbacks(rep[0]);
-                    return true;
-            }
-            return true;
-        });
-    }
-
-    private void changeVolume(int dir) {
-        try {
+    private void setVolumeLevel(int v, float frac) {
+        if (tw != null && tw.isConnected() && tw.volumeValue(v)) return;
+        try { // respaldo: volumen de Android
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, 0);
+            int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(frac * max), 0);
         } catch (Exception ignored) {
         }
-        updateVolume();
     }
 
     private void updateVolume() {
+        if (tw != null && tw.isConnected()) {
+            if (volLevel < 0) tw.getVolume();
+            return;
+        }
+        if (volSlider.isDragging() || System.currentTimeMillis() - volTouchedAt < 1200) return;
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
             int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-            volBar.setMax(max);
-            volBar.setProgress(cur);
+            volSlider.setLevel(cur / (float) max);
             volText.setText(String.valueOf(cur));
         } catch (Exception ignored) {
         }
@@ -1312,6 +1329,10 @@ public class MainActivity extends AppCompatActivity {
         sb.append("Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
         sb.append("Equipo: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n\n");
         sb.append("Acceso a notificaciones: ").append(notifAccess ? "SÍ" : "NO").append("\n");
+        sb.append("Volumen radio: ").append(tw != null && tw.isConnected() ? "conectado" : "NO conectado")
+                .append(" | nivel ").append(tw == null ? -1 : tw.lastSystemVolume)
+                .append(" | estado ").append(tw == null ? -1 : tw.lastVolumeStatus)
+                .append(" | máx usado ").append(volMax).append("\n");
         sb.append("Acceso de uso (anti launcher de fábrica): ").append(KeepAliveService.hasUsageAccess(this) ? "SÍ" : "NO").append("\n");
         sb.append("Sesión de música activa en la app: ").append(MediaListenerService.hasController() ? "SÍ" : "NO").append("\n");
         sb.append("Último aviso de música recibido: ").append(lastBroadcast).append("\n");
