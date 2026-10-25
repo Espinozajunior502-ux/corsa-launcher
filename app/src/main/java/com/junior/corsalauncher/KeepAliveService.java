@@ -70,8 +70,13 @@ public class KeepAliveService extends Service {
             String a = intent.getAction();
             if (a == null) return;
             long now = SystemClock.elapsedRealtime();
-            if (Intent.ACTION_SCREEN_OFF.equals(a)) {
+            if (Intent.ACTION_SCREEN_OFF.equals(a) || a.endsWith("ACC_OFF")
+                    || a.endsWith("DO_SLEEP") || a.endsWith("DO_SHUTDOWN")) {
                 screenOffAt = now;
+            } else if (a.endsWith("ACC_ON") || a.endsWith("DO_WAKEUP")) {
+                // la radio avisa que el carro encendió: adelantarse al launcher de fábrica
+                goHomeSoon();
+                screenOffAt = 0;
             } else {
                 // despertó (pantalla, desbloqueo, ACC/energía): si estuvo apagada un rato, volver al launcher
                 boolean longSleep = screenOffAt != 0 && now - screenOffAt > 15000;
@@ -92,7 +97,7 @@ public class KeepAliveService extends Service {
 
     private void goHomeSoon() {
         h.removeCallbacks(homeNow);
-        long[] delays = {800, 2500, 5000, 9000};
+        long[] delays = {0, 400, 1200, 3000, 6000, 10000};
         for (long d : delays) h.postDelayed(homeNow, d);
     }
 
@@ -203,6 +208,11 @@ public class KeepAliveService extends Service {
             f.addAction(Intent.ACTION_USER_PRESENT);
             f.addAction(Intent.ACTION_POWER_CONNECTED);
             f.addAction(Intent.ACTION_POWER_DISCONNECTED);
+            f.addAction("com.unisound.intent.action.ACC_ON");
+            f.addAction("com.unisound.intent.action.ACC_OFF");
+            f.addAction("com.unisound.intent.action.DO_WAKEUP");
+            f.addAction("com.unisound.intent.action.DO_SLEEP");
+            f.addAction("com.unisound.intent.action.DO_SHUTDOWN");
             registerReceiver(screenReceiver, f);
         } catch (Exception ignored) {
         }
