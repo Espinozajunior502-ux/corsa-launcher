@@ -170,12 +170,22 @@ public class MainActivity extends AppCompatActivity {
                     c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE)));
             dateText.setText(formatDate(c));
             int hour = c.get(Calendar.HOUR_OF_DAY);
-            String saludo = hour < 12 ? "Buenos días" : (hour < 19 ? "Buenas tardes" : "Buenas noches");
-            greetingText.setText(saludo + ", " + USER_NAME);
+            greetingText.setText(radioBluetoothName());
             applyDim(hour);
             mainHandler.postDelayed(this, 10000);
         }
     };
+
+    /** Nombre Bluetooth de la propia pantalla (el que ve el teléfono al emparejar). */
+    private String radioBluetoothName() {
+        try {
+            BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+            String n = ad == null ? null : ad.getName();
+            if (n != null && !n.trim().isEmpty()) return n.trim();
+        } catch (Exception ignored) {
+        }
+        return "Corsa";
+    }
 
     private final Runnable progressTick = new Runnable() {
         @Override
@@ -1234,6 +1244,7 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnCloseDiag).setOnClickListener(v -> diagOverlay.setVisibility(View.GONE));
         findViewById(R.id.btnRefreshDiag).setOnClickListener(v -> diagText.setText(buildDiagnostics()));
         findViewById(R.id.btnAnalyze).setOnClickListener(v -> analyzeBtApp());
+        findViewById(R.id.btnRadio).setOnClickListener(v -> analyzeRadio());
         findViewById(R.id.btnTestUp).setOnClickListener(v -> {
             if (tw != null) tw.volumeUp();
             mainHandler.postDelayed(() -> diagText.setText(buildDiagnostics()), 600);
@@ -1316,11 +1327,100 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Copia los APK del radio a Descargas para poder revisarlos. */
+    /** Escanea los servicios de la radio para encontrar cómo controlar el volumen. */
+    private void analyzeRadio() {
+        StringBuilder sb = new StringBuilder("ANÁLISIS DE LA RADIO\n\n");
+        PackageManager pm = getPackageManager();
+        try {
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            String[] names = (String[]) sm.getMethod("listServices").invoke(null);
+            sb.append("Servicios del sistema (tw/mcu/vol/audio/key/car):\n");
+            for (String n : names) {
+                String l = n.toLowerCase(Locale.ROOT);
+                if (l.contains("tw") || l.contains("mcu") || l.contains("vol") || l.contains("audio")
+                        || l.contains("key") || l.contains("car") || l.contains("john") || l.contains("xt")) {
+                    sb.append("  ").append(n).append("\n");
+                }
+            }
+        } catch (Throwable t) {
+            sb.append("ServiceManager no accesible: ").append(t).append("\n");
+        }
+        sb.append("\nServicio com.tw.service.xt:\n");
+        try {
+            Intent i = new Intent("com.tw.service.xt.CommandService.Bind");
+            List<ResolveInfo> r = pm.queryIntentServices(i, 0);
+            sb.append("  por acción: ").append(r == null ? 0 : r.size()).append(" resultado(s)\n");
+            if (r != null) for (ResolveInfo ri : r) {
+                sb.append("   → ").append(ri.serviceInfo.packageName).append("/").append(ri.serviceInfo.name)
+                        .append(" exp=").append(ri.serviceInfo.exported).append(" perm=").append(ri.serviceInfo.permission).append("\n");
+            }
+            sb.append("  paquete com.tw.service.xt instalado: ");
+            try {
+                pm.getPackageInfo("com.tw.service.xt", 0);
+                sb.append("SÍ\n");
+            } catch (Exception e) {
+                sb.append("NO\n");
+            }
+        } catch (Exception e) {
+            sb.append("  error: ").append(e).append("\n");
+        }
+        sb.append("\nServicios declarados (com.tw*, com.eckom*):\n");
+        try {
+            List<android.content.pm.PackageInfo> pis = pm.getInstalledPackages(PackageManager.GET_SERVICES);
+            Collections.sort(pis, (a, b) -> a.packageName.compareTo(b.packageName));
+            for (android.content.pm.PackageInfo pi : pis) {
+                String n = pi.packageName;
+                if (!(n.startsWith("com.tw") || n.startsWith("com.eckom") || n.contains("unisound"))) continue;
+                sb.append(" ").append(n).append(" (").append(pi.versionName).append(")\n");
+                if (pi.services != null) for (android.content.pm.ServiceInfo si : pi.services) {
+                    String sn = si.name.startsWith(n) ? si.name.substring(n.length()) : si.name;
+                    sb.append("    ").append(sn).append(si.exported ? " [exp]" : "")
+                            .append(si.permission != null ? " perm" : "").append("\n");
+                }
+            }
+        } catch (Throwable t) {
+            sb.append("  error: ").append(t).append("\n");
+        }
+        sb.append("\nTWUtil (métodos):\n");
+        try {
+            Class<?> c = Class.forName("android.tw.john.TWUtil");
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (!java.lang.reflect.Modifier.isPublic(m.getModifiers())) continue;
+                StringBuilder ps = new StringBuilder();
+                for (Class<?> pc : m.getParameterTypes()) ps.append(pc.getSimpleName()).append(",");
+                sb.append("  ").append(m.getName()).append("(").append(ps).append(")\n");
+            }
+        } catch (Throwable t) {
+            sb.append("  no accesible: ").append(t).append("\n");
+        }
+        sb.append("\nÚltimas teclas recibidas (presiona VOL+/VOL- y pulsa Analizar radio):\n");
+        for (String k : keyLog) sb.append("  ").append(k).append("\n");
+        diagText.setText(sb.toString());
+    }
+
+    private final List<String> keyLog = new ArrayList<>();
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+            keyLog.add(String.format(Locale.US, "%tT ", Calendar.getInstance()) + KeyEvent.keyCodeToString(e.getKeyCode())
+                    + " (" + e.getKeyCode() + ")");
+            while (keyLog.size() > 8) keyLog.remove(0);
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
     private void copyApks() {
         StringBuilder sb = new StringBuilder();
         File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
         dir.mkdirs();
-        for (String pkg : new String[]{"com.tw.bt", "com.tw.media"}) {
+        List<String> pkgs = new ArrayList<>();
+        for (android.content.pm.ApplicationInfo ai : getPackageManager().getInstalledApplications(0)) {
+            String n = ai.packageName;
+            if (n.startsWith("com.tw") || n.startsWith("com.eckom") || n.contains("unisound")) pkgs.add(n);
+        }
+        Collections.sort(pkgs);
+        for (String pkg : pkgs) {
             try {
                 String src = getPackageManager().getApplicationInfo(pkg, 0).sourceDir;
                 File dst = new File(dir, pkg + ".apk");
@@ -1329,11 +1429,12 @@ public class MainActivity extends AppCompatActivity {
                     int n;
                     while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                 }
-                sb.append("Copiado: ").append(dst.getAbsolutePath()).append(" (").append(dst.length() / 1024).append(" KB)\n");
+                sb.append("Copiado: ").append(dst.getName()).append(" (").append(dst.length() / 1024).append(" KB)\n");
             } catch (Exception e) {
                 sb.append("Error con ").append(pkg).append(": ").append(e).append("\n");
             }
         }
+        sb.append("\nGuardados en la carpeta Descargas (Download).\n");
         diagText.setText(sb.toString());
     }
 

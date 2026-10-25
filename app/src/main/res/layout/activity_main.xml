@@ -659,6 +659,15 @@
                 android:textSize="20sp" />
 
             <TextView
+                android:id="@+id/btnRadio"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:text="Analizar radio"
+                android:textColor="@color/accent"
+                android:textSize="20sp" />
+
+            <TextView
                 android:id="@+id/btnAnalyze"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

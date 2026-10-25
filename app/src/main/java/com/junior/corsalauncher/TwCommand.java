@@ -119,7 +119,19 @@ public class TwCommand {
             Intent i = new Intent(SERVICE_ACTION);
             i.setComponent(new ComponentName(SERVICE_PKG, SERVICE_CLS));
             binding = ctx.bindService(i, conn, Context.BIND_AUTO_CREATE);
-            note("bindService -> " + binding);
+            note("bindService(acción+clase) -> " + binding);
+            if (!binding) { // variantes alternativas
+                Intent i2 = new Intent();
+                i2.setClassName(SERVICE_PKG, SERVICE_CLS);
+                binding = ctx.bindService(i2, conn, Context.BIND_AUTO_CREATE);
+                note("bindService(solo clase) -> " + binding);
+            }
+            if (!binding) {
+                Intent i3 = new Intent(SERVICE_ACTION);
+                i3.setPackage(SERVICE_PKG);
+                binding = ctx.bindService(i3, conn, Context.BIND_AUTO_CREATE);
+                note("bindService(acción+paquete) -> " + binding);
+            }
             if (!binding) listener.onConnected(false);
         } catch (Exception e) {
             note("bindService error: " + e);

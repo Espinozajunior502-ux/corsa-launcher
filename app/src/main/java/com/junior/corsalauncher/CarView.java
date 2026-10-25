@@ -38,6 +38,7 @@ public class CarView extends View {
     private float targetSpeed = 0f;   // km/h reales
     private float shownSpeed = 0f;    // suavizada
     private float wheelAngle = 0f;
+    private float blur = 0f;
     private float roadOffset = 0f;
     private long lastFrame = 0;
     private long demoUntil = 0;
@@ -214,8 +215,11 @@ public class CarView extends View {
             shownSpeed += (goal - shownSpeed) * Math.min(1f, dt * 3f);
             if (Math.abs(goal - shownSpeed) < 0.3f) shownSpeed = goal;
 
-            float degPerSec = Math.min(shownSpeed * 14f, 900f);
-            wheelAngle = (wheelAngle + degPerSec * dt) % 360f;
+            // Giro progresivo: más velocidad = más rápido. Se limita el avance por cuadro para
+            // que no parezca girar hacia atrás, y a alta velocidad se añade desenfoque.
+            float omega = shownSpeed * 12f;                // grados por segundo
+            wheelAngle = (wheelAngle + Math.min(omega * dt, 22f)) % 360f;
+            blur = Math.max(0f, Math.min(0.85f, (omega - 420f) / 480f));
             roadOffset = (roadOffset + shownSpeed * 2.2f * dt) % 100f;
 
             int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
@@ -322,12 +326,22 @@ public class CarView extends View {
         fill.setColor(0xFF34363C);
         c.drawCircle(0, 0, 86, fill);
         fill.setColor(0xFFB0B3BA);
+        fill.setAlpha((int) (255 * (1f - blur * 0.85f)));
         for (int k = 0; k < 6; k++) {
             c.save();
             c.rotate(wheelAngle + k * 60f);
             c.drawPath(spoke, fill);
             c.restore();
         }
+        if (blur > 0.02f) { // desenfoque de movimiento a alta velocidad
+            fill.setColor(0xFF9A9DA5);
+            fill.setAlpha((int) (255 * blur * 0.65f));
+            c.drawCircle(0, 0, 84, fill);
+            fill.setColor(0xFF34363C);
+            fill.setAlpha((int) (255 * blur * 0.5f));
+            c.drawCircle(0, 0, 40, fill);
+        }
+        fill.setAlpha(255);
         fill.setColor(0xFF82858C);
         c.drawCircle(0, 0, 16, fill);
         fill.setColor(0xFFBEC0C6);
