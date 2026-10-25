@@ -10,7 +10,9 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.XmlResourceParser;
 import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
 import android.location.Location;
@@ -55,6 +57,10 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Executors;
@@ -112,6 +118,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean notifAccess = false;
     private MediaListenerService.NowPlayingInfo currentInfo = null;
     private String lastBroadcast = "(ninguno)";
+    private final List<String> sniffLog = new ArrayList<>();
+    private final Map<String, Set<String>> twActions = new LinkedHashMap<>();
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -175,6 +183,94 @@ public class MainActivity extends AppCompatActivity {
             MediaListenerService.nowPlaying.setValue(info);
         }
     };
+
+    /** Escucha las acciones que declaran las apps com.tw.* del radio y apunta lo que llega. */
+    private final BroadcastReceiver sniffReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format(Locale.US, "%tT ", Calendar.getInstance()));
+            sb.append(intent.getAction());
+            String title = null, artist = null, album = null;
+            Bundle ex = intent.getExtras();
+            if (ex != null) {
+                for (String k : ex.keySet()) {
+                    Object v = ex.get(k);
+                    String vs = String.valueOf(v);
+                    if (vs.length() > 60) vs = vs.substring(0, 60) + "…";
+                    sb.append(" | ").append(k).append("=").append(vs);
+                    if (v instanceof String && !((String) v).isEmpty()) {
+                        String kl = k.toLowerCase(Locale.ROOT);
+                        if (kl.contains("title") || kl.contains("song") || kl.contains("track") || kl.equals("name")) {
+                            if (title == null) title = (String) v;
+                        } else if (kl.contains("artist") || kl.contains("singer")) {
+                            artist = (String) v;
+                        } else if (kl.contains("album")) {
+                            album = (String) v;
+                        }
+                    }
+                }
+            }
+            sniffLog.add(sb.toString());
+            while (sniffLog.size() > 25) sniffLog.remove(0);
+            lastBroadcast = String.valueOf(intent.getAction());
+            if (title != null && !MediaListenerService.hasController()) {
+                MediaListenerService.NowPlayingInfo info = new MediaListenerService.NowPlayingInfo();
+                info.title = title;
+                info.artist = artist == null ? "" : artist;
+                info.album = album == null ? "" : album;
+                info.source = "Bluetooth";
+                info.isPlaying = true;
+                info.updateTime = SystemClock.elapsedRealtime();
+                MediaListenerService.nowPlaying.setValue(info);
+            }
+        }
+    };
+
+    /** Lee el AndroidManifest de otra app instalada y junta sus acciones de receptores/servicios. */
+    private Set<String> readManifestActions(String pkg) {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            XmlResourceParser xp = getPackageManager().getResourcesForApplication(pkg)
+                    .getAssets().openXmlResourceParser("AndroidManifest.xml");
+            int ev;
+            while ((ev = xp.next()) != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                if (ev == org.xmlpull.v1.XmlPullParser.START_TAG && "action".equals(xp.getName())) {
+                    String n = xp.getAttributeValue("http://schemas.android.com/apk/res/android", "name");
+                    if (n != null && !n.equals("android.intent.action.MAIN")
+                            && !n.startsWith("android.intent.action.BOOT")
+                            && !n.equals("android.intent.action.VIEW")) {
+                        out.add(n);
+                    }
+                }
+            }
+            xp.close();
+        } catch (Exception e) {
+            Log.w(TAG, "No pude leer el manifest de " + pkg, e);
+        }
+        return out;
+    }
+
+    private void startSniffer() {
+        try {
+            IntentFilter f = new IntentFilter();
+            int count = 0;
+            for (PackageInfo pi : getPackageManager().getInstalledPackages(0)) {
+                String pn = pi.packageName;
+                if (!(pn.startsWith("com.tw.") || pn.startsWith("android.tw") || pn.contains(".tw."))) continue;
+                Set<String> acts = readManifestActions(pn);
+                if (acts.isEmpty()) continue;
+                twActions.put(pn, acts);
+                for (String a : acts) {
+                    if (count++ > 300) break;
+                    f.addAction(a);
+                }
+            }
+            if (count > 0) registerReceiver(sniffReceiver, f);
+        } catch (Exception e) {
+            Log.w(TAG, "Espía no iniciado", e);
+        }
+    }
 
     private static String firstExtra(Intent i, String... keys) {
         for (String k : keys) {
@@ -241,6 +337,7 @@ public class MainActivity extends AppCompatActivity {
         setupMusic();
         setupBluetooth();
         setupDiagnostics();
+        startSniffer();
         requestNeededPermissions();
     }
 
@@ -290,6 +387,10 @@ public class MainActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(musicReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(sniffReceiver);
         } catch (Exception ignored) {
         }
         if (locationManager != null) {
@@ -356,7 +457,11 @@ public class MainActivity extends AppCompatActivity {
         });
 
         findViewById(R.id.musicCard).setOnClickListener(v -> {
-            if (!notifAccess) openNotificationAccessSettings();
+            if (!notifAccess) {
+                openNotificationAccessSettings();
+            } else {
+                openFactoryMusic();
+            }
         });
 
         IntentFilter f = new IntentFilter();
@@ -369,7 +474,39 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** Abre la app de Bluetooth/música de fábrica del radio. */
+    private void openFactoryMusic() {
+        for (String pkg : new String[]{"com.tw.bt", "com.tw.media"}) {
+            Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i != null) {
+                launch(i);
+                return;
+            }
+        }
+        Toast.makeText(this, "No encontré la app de música del radio", Toast.LENGTH_SHORT).show();
+    }
+
     private void sendMediaKey(int keyCode) {
+        // Si una app del radio (com.tw.*) recibe botones multimedia, se los mandamos a ella sola
+        try {
+            Intent probe = new Intent(Intent.ACTION_MEDIA_BUTTON);
+            List<ResolveInfo> rs = getPackageManager().queryBroadcastReceivers(probe, 0);
+            boolean sent = false;
+            for (ResolveInfo r : rs) {
+                String pn = r.activityInfo.packageName;
+                if (!pn.startsWith("com.tw.")) continue;
+                for (int action : new int[]{KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
+                    Intent i = new Intent(Intent.ACTION_MEDIA_BUTTON);
+                    i.setComponent(new ComponentName(pn, r.activityInfo.name));
+                    i.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(action, keyCode));
+                    sendBroadcast(i);
+                }
+                sent = true;
+            }
+            if (sent) return;
+        } catch (Exception e) {
+            Log.w(TAG, "Botón multimedia dirigido falló", e);
+        }
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, keyCode));
@@ -758,6 +895,24 @@ public class MainActivity extends AppCompatActivity {
         }
 
         sb.append("\nNotificaciones multimedia:\n").append(MediaListenerService.describeNotifications());
+        sb.append("\nAvisos recibidos de apps com.tw.* (últimos):\n");
+        if (sniffLog.isEmpty()) sb.append("  (ninguno aún)\n");
+        for (int i = Math.max(0, sniffLog.size() - 12); i < sniffLog.size(); i++) {
+            sb.append("  ").append(sniffLog.get(i)).append("\n");
+        }
+        sb.append("\nAcciones que declaran las apps del radio:\n");
+        for (Map.Entry<String, Set<String>> e : twActions.entrySet()) {
+            if (!(e.getKey().equals("com.tw.bt") || e.getKey().equals("com.tw.media"))) continue;
+            sb.append("  ").append(e.getKey()).append(":\n");
+            int n = 0;
+            for (String a : e.getValue()) {
+                if (n++ >= 40) {
+                    sb.append("   …y más\n");
+                    break;
+                }
+                sb.append("   ").append(a).append("\n");
+            }
+        }
         sb.append("\nApps relacionadas con música/Bluetooth/cámara:\n");
         loadApps();
         for (AppEntry e : apps) {
